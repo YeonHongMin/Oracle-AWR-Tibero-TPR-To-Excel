@@ -3,14 +3,15 @@
 
 """
 AWR HTML to Excel Converter with Charts.
-Oracle AWR HTML 리포트를 Excel 파일로 변환하는 프로그램.
-INI 설정 파일을 기반으로 셀 형식과 차트를 자동으로 생성.
+Converts Oracle AWR HTML spool reports into formatted Excel workbooks,
+automatically applying cell formats and charts defined in INI configuration files.
 
 Made By, yeonhong.min@gmail.com
 Version 1.0 - 2025.11.21
 """
 
 import re
+import io
 import os
 import sys
 import argparse
@@ -20,18 +21,18 @@ from typing import List, Dict, Tuple, Optional, Any
 import xlsxwriter
 
 
-# 상수 정의
+# Application-wide constants
 class Constants:
-    """프로그램 전체에서 사용되는 상수 정의"""
+    """Constants shared across the converter."""
     
-    # 파일 인코딩
+    # File encodings
     ENCODING_EUC_KR = 'euc-kr'
     ENCODING_UTF8 = 'utf-8'
     
-    # 파일 확장자
+    # File extensions
     EXCEL_EXTENSION = '.xlsx'
     
-    # HTML 패턴
+    # HTML parsing markers and tags
     INI_NAME_PATTERN = r'^SQL&gt; rem INI_NAME=(.*)'
     TABLE_START_TAG = '<table'
     TABLE_END_TAG = '</table>'
@@ -39,20 +40,31 @@ class Constants:
     CELL_TAG_HEADER = '<th'
     CELL_TAG_DATA = '<td'
     
-    # Excel 관련
-    MAX_EXCEL_ROWS = 65535
+    # Excel limits and defaults
+    # Maximum rows per .xlsx worksheet (legacy .xls was 65,536); also used when expanding 'E' (end row) in FORMAT ranges
+    MAX_EXCEL_ROWS = 1048576
     DEFAULT_CHART_WIDTH = 15
     DEFAULT_CHART_HEIGHT = 10
     
-    # INI 파일 섹션
+    # INI directive prefixes and patterns
     INI_FORMAT_PREFIX = 'FORMAT'
     INI_CHART_PREFIX = 'CHART'
+    INI_SQL_PATTERN = r'^SQL\d+='
+
+    # Timestamp column pattern (SQL: to_char(..., 'yyyy-mm-dd hh24:mi:ss')) and default chart X-axis format
+    TIMESTAMP_PATTERN = r'^\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}$'
+    X_TIME_FORMAT_DEFAULT = 'mm-dd hh:mm'
+
+    # Paste direction in SQLn directives (matching the original OSRAnalyzer macro):
+    #   T2D (Top to Down) : Default. Writes query rows normally down the worksheet.
+    #   Other (e.g. LTOR) : Transposed paste. Each query record becomes one column on the target sheet.
+    DIRECTION_T2D = 'T2D'
     
-    # 차트 타입
+    # Chart types
     CHART_TYPE_LINE = 'LINE'
     CHART_TYPE_BAR = 'BAR'
     
-    # 날짜 형식
+    # Date and datetime formats
     DATE_FORMAT_SHORT = 'yyyy/mm/dd'
     DATE_FORMAT_LONG = 'yyyy/mm/dd hh:mm'
     EXCEL_DATE_FORMAT = '%Y-%m-%dT%H:%M:%S'
@@ -61,67 +73,77 @@ class Constants:
 
 class AWRHtmlToExcelConverter:
     """
-    AWR HTML 파일을 Excel로 변환하는 메인 클래스
-    
-    이 클래스는 Oracle AWR HTML 리포트를 읽어서 Excel 파일로 변환하며,
-    INI 설정 파일에 정의된 형식과 차트를 자동으로 적용.
-    
+    Main converter class that turns AWR HTML spool files into Excel workbooks.
+
+    Reads an Oracle AWR HTML spool file, builds worksheets from the spooled HTML tables,
+    and applies number formats, transposed header overlays, and charts defined in the INI file.
+
     Attributes:
-        debug (bool): 디버그 모드 활성화 여부
-        ini_format_config (Dict): INI 파일에서 읽은 셀 형식 설정
-        ini_chart_config (Dict): INI 파일에서 읽은 차트 설정
-        excel_format_cache (Dict): Excel 형식 객체 캐시
-        current_sheet_name (str): 현재 처리 중인 시트 이름
+        debug (bool): Whether debug logging is enabled.
+        ini_format_config (Dict): Per-sheet cell number format definitions from the INI file.
+        ini_chart_config (Dict): Per-sheet chart definitions from the INI file.
+        excel_format_cache (Dict): Cache of created xlsxwriter Format objects.
+        current_sheet_name (str): Name of the worksheet currently being written.
     """
     
     def __init__(self, debug: bool = False):
         """
-        클래스 초기화
-        
+        Initialize converter state.
+
         Args:
-            debug: 디버그 모드 활성화 여부
+            debug: Whether to enable verbose debug logging.
         """
         self.debug = debug
         
-        # INI 파일에서 읽은 설정 저장
-        self.ini_format_config: Dict[str, List] = {}  # 시트별 셀 형식 설정
-        self.ini_chart_config: Dict[str, List] = {}   # 시트별 차트 설정
-        self.excel_format_cache: Dict[str, Any] = {}  # Excel 형식 객체 캐시
+        # Parsed INI configuration
+        self.ini_format_config: Dict[str, List] = {}  # Per-sheet cell format ranges
+        self.ini_chart_config: Dict[str, List] = {}   # Per-sheet chart definitions
+        # SQLn directives: [(index, query_section_name, target_sheet, start_row, start_col, include_title_row, direction), ...]
+        self.ini_sql_config: List[Tuple[int, str, str, int, int, bool, str]] = []
+        # Overlay cells per target sheet produced by transposed helper queries: {sheet: [(row0, col0, value), ...]}
+        self.sheet_overlays: Dict[str, List[Tuple[int, int, str]]] = {}
+        self.excel_format_cache: Dict[str, Any] = {}  # Cache of xlsxwriter Format objects
         
-        # 현재 처리 중인 시트 정보
+        # Active worksheet tracking
         self.current_sheet_name: str = ''
+        self.current_header_row: List[str] = []
         
-        # Excel 워크북 및 워크시트 객체
+        # Excel workbook and active worksheet handles
         self.workbook: Optional[xlsxwriter.Workbook] = None
         self.current_worksheet: Optional[xlsxwriter.worksheet.Worksheet] = None
         
-        # Excel 기본 형식 객체들
+        # Default Excel cell format objects
         self.number_format: Optional[Any] = None
         self.string_format: Optional[Any] = None
         self.date_format: Optional[Any] = None
         self.datetime_format: Optional[Any] = None
         
-        # 파일 경로
+        # File paths
         self.input_html_path: str = ''
         self.output_excel_path: str = ''
         self.ini_config_path: str = ''
         
-        # 현재 처리 위치 (디버깅용)
+        # Current cell coordinates (for debugging)
         self.current_row_index: int = 0
+
+        # Chart X-axis (time) label rotation angle in degrees; default is vertical (-90), override via --x-rotation
+        self.x_label_rotation: int = -90
+        # Chart X-axis time number format; override via --x-format, or pass empty string to keep INI setting
+        self.x_time_format: str = Constants.X_TIME_FORMAT_DEFAULT
         self.current_col_index: int = 0
     
     def parse_command_line_arguments(self) -> None:
         """
-        명령행 인수를 파싱하여 입력/출력 파일명 설정
-        
-        명령행 옵션:
-            -i, --input: 입력 HTML 파일 (필수)
-            -o, --output: 출력 Excel 파일 (선택, 기본값: 입력파일명.xlsx)
-            -n, --ini: INI 설정 파일 (선택, 기본값: HTML에서 자동 추출)
-            --debug: 디버그 출력 활성화
-        
+        Parse command-line arguments and configure input/output paths and chart options.
+
+        CLI Options:
+            -i, --input: Input AWR HTML file path (required).
+            -o, --output: Output Excel file path (optional; defaults to <input>.xlsx).
+            -n, --ini: INI configuration file path (optional; auto-extracted from HTML if omitted).
+            --debug: Enable debug logging.
+
         Raises:
-            SystemExit: 필수 인수가 누락된 경우
+            SystemExit: If required arguments are missing.
         """
         parser = argparse.ArgumentParser(
             description='Convert Oracle AWR HTML report to Excel with formatting and charts',
@@ -156,97 +178,150 @@ Examples:
             help='Enable debug output for troubleshooting'
         )
         
+        parser.add_argument(
+            '--x-rotation',
+            type=int,
+            default=-90,
+            metavar='DEG',
+            help='Rotation of the chart X axis (time) labels in degrees, -90..90 '
+                 '(default: -90 = vertical, 0 = horizontal)'
+        )
+
+        parser.add_argument(
+            '--x-format',
+            default=Constants.X_TIME_FORMAT_DEFAULT,
+            metavar='FMT',
+            help='Number format of the chart X axis time labels '
+                 "(default: 'mm-dd hh:mm'; empty string keeps the INI setting)"
+        )
+
         args = parser.parse_args()
-        
-        # 입력 파일 설정 (필수)
+
+        # Clamp X-axis label rotation to Excel's valid range (-90 .. 90)
+        self.x_label_rotation = max(-90, min(90, args.x_rotation))
+
+        # X-axis time label number format
+        self.x_time_format = args.x_format
+
+        # Required input HTML file path
         self.input_html_path = args.input
         
-        # 출력 파일 설정 (옵션)
+        # Optional output Excel file path
         if args.output:
             self.output_excel_path = args.output
         else:
-            # 입력 파일의 확장자를 .xlsx로 변경
+            # Replace input extension with .xlsx
             base_name = os.path.splitext(self.input_html_path)[0]
             self.output_excel_path = base_name + Constants.EXCEL_EXTENSION
         
-        # INI 파일 설정 (옵션)
+        # Optional INI configuration file path
         self.ini_config_path = args.ini if args.ini else ''
         
-        # 디버그 모드 설정
+        # Enable debug mode if requested
         if args.debug:
             self.debug = True
     
+    def _read_text(self, path: str) -> str:
+        """
+        Read an entire file into a string, trying candidate encodings strictly in order.
+
+        Tries utf-8 -> cp949 -> euc-kr and returns the first decoding that succeeds without error.
+        (Previously opening euc-kr first with errors='replace' caused UTF-8 files from AL32UTF8 DB
+        SQL*Plus spools to be misdecoded as EUC-KR, corrupting non-ASCII text.)
+        Falls back to utf-8 with errors='replace' if all strict decodings fail.
+
+        Args:
+            path: Path to the file to read.
+
+        Returns:
+            str: Decoded file contents.
+        """
+        with open(path, 'rb') as f:
+            raw = f.read()
+        for encoding in (Constants.ENCODING_UTF8, 'cp949', Constants.ENCODING_EUC_KR):
+            try:
+                text = raw.decode(encoding)
+                if self.debug:
+                    print(f"Read {path} as {encoding}")
+                return text
+            except UnicodeDecodeError:
+                continue
+        return raw.decode(Constants.ENCODING_UTF8, errors='replace')
+
     def extract_ini_filename_from_html(self) -> str:
         """
-        HTML 파일의 첫 번째 줄에서 INI 파일명 추출
-        
-        HTML 파일 내의 "SQL> rem INI_NAME=xxx.ini" 패턴을 찾아서
-        INI 설정 파일명을 추출합니다.
-        
+        Extract the source INI filename recorded inside the HTML spool file.
+
+        Searches the HTML file for the marker line "SQL> rem INI_NAME=xxx.ini"
+        and returns the referenced INI path.
+
         Returns:
-            str: INI 파일 경로 (찾지 못한 경우 빈 문자열)
-        
-        Note:
-            - 먼저 EUC-KR 인코딩으로 시도
-            - 실패시 UTF-8 인코딩으로 재시도
+            str: Extracted INI file path, or an empty string if not found.
         """
-        ini_filename = ""
-        encodings = [Constants.ENCODING_EUC_KR, Constants.ENCODING_UTF8]
-        
-        for encoding in encodings:
-            try:
-                if encoding == Constants.ENCODING_EUC_KR:
-                    file_handle = codecs.open(
-                        self.input_html_path,
-                        'r',
-                        encoding=encoding,
-                        errors='replace'
-                    )
-                else:
-                    file_handle = open(
-                        self.input_html_path,
-                        'r',
-                        encoding=encoding,
-                        errors='replace'
-                    )
-                
-                with file_handle as f:
-                    for line in f:
-                        # INI 파일명 패턴 매칭
-                        match = re.match(Constants.INI_NAME_PATTERN, line)
-                        if match:
-                            ini_filename = "./" + match.group(1).strip()
-                            if self.debug:
-                                print(f"Found INI file reference: {ini_filename}")
-                            break
-                
-                if ini_filename:
-                    break
-                    
-            except UnicodeDecodeError:
+        try:
+            text = self._read_text(self.input_html_path)
+        except Exception as e:
+            if self.debug:
+                print(f"Error reading file: {e}")
+            return ""
+
+        for line in text.splitlines():
+            match = re.match(Constants.INI_NAME_PATTERN, line)
+            if match:
+                ini_filename = "./" + match.group(1).strip()
                 if self.debug:
-                    print(f"Failed to read with {encoding} encoding, trying next...")
-                continue
-            except Exception as e:
+                    print(f"Found INI file reference: {ini_filename}")
+                return ini_filename
+
+        return ""
+
+    def _resolve_ini_path(self, ini_path: str) -> str:
+        """
+        Search fallback directories for the INI filename when the recorded path is not found.
+
+        Because the HTML records the literal INI path used at SQL generation time (e.g. ../a.ini),
+        running the converter from a different working directory may not find it directly.
+        Checks candidate directories in order using the basename:
+        HTML file directory -> current working directory -> script directory -> each parent directory.
+
+        Args:
+            ini_path: INI path extracted from HTML or passed on the CLI.
+
+        Returns:
+            str: Resolved existing file path, or the original path if not found anywhere.
+        """
+        base_name = os.path.basename(ini_path.replace('\\', '/'))
+        html_dir = os.path.dirname(os.path.abspath(self.input_html_path))
+        script_dir = os.path.dirname(os.path.abspath(__file__))
+
+        search_dirs = []
+        for directory in (html_dir, os.getcwd(), script_dir):
+            for candidate in (directory, os.path.dirname(directory)):
+                if candidate not in search_dirs:
+                    search_dirs.append(candidate)
+
+        for directory in search_dirs:
+            candidate = os.path.join(directory, base_name)
+            if os.path.exists(candidate):
                 if self.debug:
-                    print(f"Error reading file with {encoding}: {e}")
-                continue
-        
-        return ini_filename
-    
+                    print(f"Resolved INI file: {candidate}")
+                return candidate
+
+        return ini_path
+
     def load_and_parse_ini_configuration(self) -> None:
         """
-        INI 설정 파일을 파싱하여 형식 및 차트 설정 로드
-        
-        INI 파일 형식:
-            FORMAT: 셀 형식 지정
-                예) FORMAT1=sheet^[1.2:E.4]^###,##0.0
-            
-            CHART: 차트 생성 설정
-                예) CHART1=sheet,[range],ACTIVE,SQL명,제목,행,열,타입,불린,X형식,X제목
-        
+        Load and parse SQL mapping, cell format, and chart directives from the INI file.
+
+        INI Directive Examples:
+            FORMAT: Cell number format range
+                e.g. FORMAT1=sheet^[1.2:E.4]^###,##0.0
+
+            CHART: Chart definition
+                e.g. CHART1=sheet,[range],ACTIVE,sql_name,title,row,col,type,legend,x_format,x_title
+
         Raises:
-            SystemExit: INI 파일이 존재하지 않는 경우
+            SystemExit: If the INI configuration file does not exist or cannot be read.
         """
         if not os.path.exists(self.ini_config_path):
             print(f"Error: INI configuration file not found: {self.ini_config_path}")
@@ -256,20 +331,25 @@ Examples:
             print(f"\nParsing INI file: {self.ini_config_path}")
         
         try:
-            with open(self.ini_config_path, 'r', encoding='utf-8') as f:
+            with io.StringIO(self._read_text(self.ini_config_path)) as f:
                 for line_num, line in enumerate(f, 1):
                     line = line.strip()
                     
-                    # 빈 줄이거나 FORMAT/CHART로 시작하지 않으면 건너뛰기
-                    if not line or not line.startswith(
-                        (Constants.INI_FORMAT_PREFIX, Constants.INI_CHART_PREFIX)
+                    # Skip blank lines and lines that do not start with SQLn=, FORMAT, or CHART
+                    is_sql_line = bool(re.match(Constants.INI_SQL_PATTERN, line))
+                    if not line or not (
+                        is_sql_line or line.startswith(
+                            (Constants.INI_FORMAT_PREFIX, Constants.INI_CHART_PREFIX)
+                        )
                     ):
                         continue
-                    
-                    # 줄바꿈 문자 제거
+
+                    # Strip any trailing newline characters
                     line = line.rstrip('\r\n')
-                    
-                    if line.startswith(Constants.INI_FORMAT_PREFIX):
+
+                    if is_sql_line:
+                        self._parse_sql_configuration(line, line_num)
+                    elif line.startswith(Constants.INI_FORMAT_PREFIX):
                         self._parse_format_configuration(line, line_num)
                     elif line.startswith(Constants.INI_CHART_PREFIX):
                         self._parse_chart_configuration(line, line_num)
@@ -282,16 +362,59 @@ Examples:
             print(f"Loaded {len(self.ini_format_config)} format configurations")
             print(f"Loaded {len(self.ini_chart_config)} chart configurations")
     
+    def _parse_sql_configuration(self, line: str, line_num: int) -> None:
+        """
+        Parse a SQLn directive line (following the original OSRAnalyzer macro rules).
+
+        Syntax: SQLn=query_name,sheet_name,[start_row.start_col],autofit[,include_header[,direction]]
+        Examples:
+            SQL1=load_sql,load,[1.1],FALSE
+            SQL2=load_sql2,load,[1.3],TRUE,FALSE,LTOR
+
+        - include_header: Defaults to TRUE (writes column headers along with data).
+        - direction: Defaults to T2D (top-to-down standard table layout). Any non-T2D value
+          (such as LTOR) transposes the result so each record occupies one column on the sheet.
+
+        Args:
+            line: Raw SQLn directive line.
+            line_num: 1-based line number in the INI file (for diagnostics).
+        """
+        try:
+            key, value = line.split('=', 1)
+            number = int(key[3:])
+            parts = [p.strip() for p in value.split(',')]
+
+            if len(parts) < 3:
+                return
+
+            title_flag = (parts[4].upper() != 'FALSE') if len(parts) > 4 else True
+            direction = parts[5].upper() if len(parts) > 5 and parts[5] else Constants.DIRECTION_T2D
+
+            query_name, sheet_name = parts[0], parts[1]
+            row_str, col_str = parts[2].strip('[]').split('.')
+            self.ini_sql_config.append(
+                (number, query_name, sheet_name, int(row_str), int(col_str),
+                 title_flag, direction)
+            )
+
+            if self.debug:
+                print(f"  SQL (line {line_num}): {query_name} -> sheet={sheet_name} "
+                      f"at ({row_str},{col_str}) title={title_flag} {direction}")
+
+        except (ValueError, IndexError) as e:
+            if self.debug:
+                print(f"  Warning: Failed to parse SQL line {line_num}: {e}")
+
     def _parse_format_configuration(self, line: str, line_num: int) -> None:
         """
-        FORMAT 설정 라인 파싱
-        
-        형식: FORMAT1=시트명^[범위]^숫자형식
-        예: FORMAT1=load^[1.3:E.36]^###,##0
-        
+        Parse a FORMAT directive line.
+
+        Syntax: FORMAT1=sheet_name^[range]^number_format
+        Example: FORMAT1=load^[1.3:E.36]^###,##0
+
         Args:
-            line: FORMAT 설정 라인
-            line_num: 라인 번호 (디버깅용)
+            line: Raw FORMAT directive line.
+            line_num: 1-based line number in the INI file (for diagnostics).
         """
         parts = re.split(r'[=\^]', line)
         
@@ -301,13 +424,13 @@ Examples:
             range_str = parts[2]
             number_format = parts[3]
             
-            # 대괄호 제거하고 'E'를 최대 행 번호로 변경
+            # Strip brackets and replace 'E' (end row) with MAX_EXCEL_ROWS
             range_str = range_str.strip('[]').replace('E', str(Constants.MAX_EXCEL_ROWS))
             
-            # 범위를 파싱하여 좌표 리스트로 변환
+            # Parse range string into coordinate tuples
             cell_ranges = self._parse_excel_cell_range(range_str, number_format)
             
-            # 시트별로 형식 설정 저장
+            # Store format ranges under target worksheet name
             if sheet_name not in self.ini_format_config:
                 self.ini_format_config[sheet_name] = []
             self.ini_format_config[sheet_name].extend(cell_ranges)
@@ -318,76 +441,93 @@ Examples:
     
     def _parse_chart_configuration(self, line: str, line_num: int) -> None:
         """
-        CHART 설정 라인 파싱
-        
-        형식: CHART1=시트명,[범위],ACTIVE,SQL명,제목,행,열,타입,불린,X형식,X제목
-        예: CHART1=load,[1.2:E.2/1.31:E.32],ACTIVE,load,Transactions,2,56,LINE,TRUE,dd hh:mm,Time
-        
+        Parse a CHART directive line.
+
+        Syntax: CHART1=sheet_name,[range],ACTIVE,sql_name,title,row,col,type,legend_bool,x_format,x_title
+        Example: CHART1=load,[1.2:E.2/1.31:E.32],ACTIVE,load,Transactions,2,56,LINE,TRUE,dd hh:mm,Time
+
         Args:
-            line: CHART 설정 라인
-            line_num: 라인 번호 (디버깅용)
+            line: Raw CHART directive line.
+            line_num: 1-based line number in the INI file (for diagnostics).
         """
         try:
+            if '=' not in line:
+                print(f"  Warning: Failed to parse CHART line {line_num} (missing '='): {line}")
+                return
             parts = line.split('=', 1)[1].split(',')
-            
-            if len(parts) >= 8:
-                sheet_name = parts[0]
-                range_str = parts[1].strip('[]')
-                # active_flag = parts[2] if len(parts) > 2 else 'ACTIVE'  # 현재 미사용
-                # sql_name = parts[3] if len(parts) > 3 else ''  # 현재 미사용
-                chart_title = parts[4] if len(parts) > 4 else ''
-                position_row = int(parts[5]) if len(parts) > 5 else 2
-                position_col = int(parts[6]) if len(parts) > 6 else 2
-                chart_type = parts[7] if len(parts) > 7 else Constants.CHART_TYPE_LINE
-                x_axis_format = parts[9] if len(parts) > 9 else ''
-                x_axis_title = parts[10] if len(parts) > 10 else ''
-                
-                # 시트별로 차트 설정 저장
-                if sheet_name not in self.ini_chart_config:
-                    self.ini_chart_config[sheet_name] = []
-                
-                chart_config = (
-                    range_str, chart_title, position_row, position_col,
-                    chart_type, x_axis_format, x_axis_title
-                )
-                self.ini_chart_config[sheet_name].append(chart_config)
-                
+
+            if len(parts) < 8:
+                print(f"  Warning: Failed to parse CHART line {line_num} (too few fields): {line}")
+                return
+
+            sheet_name = parts[0].strip()
+            range_str = parts[1].strip().strip('[]')
+            active_flag = parts[2].strip() if len(parts) > 2 else 'ACTIVE'
+            if active_flag.upper() != 'ACTIVE':
                 if self.debug:
-                    print(f"  CHART (line {line_num}): sheet={sheet_name}, "
-                          f"title={chart_title}, pos=({position_row},{position_col}), "
-                          f"type={chart_type}")
-        
-        except (IndexError, ValueError) as e:
+                    print(f"  CHART (line {line_num}): skipped non-ACTIVE ({active_flag}) on sheet={sheet_name}")
+                return
+
+            if len(parts) >= 11:
+                chart_title = ','.join(parts[4:-6]).strip()
+                position_row = int(parts[-6].strip())
+                position_col = int(parts[-5].strip())
+                chart_type = parts[-4].strip() or Constants.CHART_TYPE_LINE
+                x_axis_format = parts[-2].strip()
+                x_axis_title = parts[-1].strip()
+            else:
+                chart_title = parts[4].strip() if len(parts) > 4 else ''
+                position_row = int(parts[5].strip()) if len(parts) > 5 else 2
+                position_col = int(parts[6].strip()) if len(parts) > 6 else 2
+                chart_type = parts[7].strip() if len(parts) > 7 else Constants.CHART_TYPE_LINE
+                x_axis_format = parts[9].strip() if len(parts) > 9 else ''
+                x_axis_title = parts[10].strip() if len(parts) > 10 else ''
+
+            # Append parsed chart definition for the target worksheet
+            if sheet_name not in self.ini_chart_config:
+                self.ini_chart_config[sheet_name] = []
+
+            chart_config = (
+                range_str, chart_title, position_row, position_col,
+                chart_type, x_axis_format, x_axis_title
+            )
+            self.ini_chart_config[sheet_name].append(chart_config)
+
             if self.debug:
-                print(f"  Warning: Failed to parse CHART line {line_num}: {e}")
+                print(f"  CHART (line {line_num}): sheet={sheet_name}, "
+                      f"title={chart_title}, pos=({position_row},{position_col}), "
+                      f"type={chart_type}")
+
+        except (IndexError, ValueError) as e:
+            print(f"  Warning: Failed to parse CHART line {line_num}: {e} -> {line}")
     
     def _parse_excel_cell_range(self, range_str: str, format_str: str) -> List[List]:
         """
-        범위 문자열을 파싱하여 Excel 좌표 리스트로 변환
-        
+        Parse a slash-delimited range specification into 1-based coordinate lists.
+
         Args:
-            range_str: 범위 문자열 (예: '1.2:E.4' 또는 '1.2:E.4/1.5:E.6')
-            format_str: 적용할 Excel 숫자 형식 문자열
-        
+            range_str: Range specification (e.g. '1.2:E.4' or '1.2:E.4/1.5:E.6').
+            format_str: Excel number format string to apply to those ranges.
+
         Returns:
-            List[List]: [[r1, c1, r2, c2, format_str], ...] 형태의 좌표 리스트
-        
+            List[List]: Coordinate entries formatted as [[r1, c1, r2, c2, format_str], ...].
+
         Examples:
             >>> _parse_excel_cell_range('1.2:5.4', '###,##0')
             [[1, 2, 5, 4, '###,##0']]
-            
+
             >>> _parse_excel_cell_range('1.2:5.4/1.6:5.8', '###,##0')
             [[1, 2, 5, 4, '###,##0'], [1, 6, 5, 8, '###,##0']]
         """
         result = []
         
-        # '/'로 구분된 여러 범위 처리
+        # Split multiple sub-ranges separated by '/'
         ranges = range_str.split('/')
         
         for range_part in ranges:
             range_part = range_part.strip()
             
-            # 범위를 좌표로 파싱 (행1.열1:행2.열2)
+            # Parse sub-range coordinates (row1.col1:row2.col2)
             parts = re.split(r'[.:]', range_part)
             
             if len(parts) == 4:
@@ -402,14 +542,14 @@ Examples:
     
     def _convert_column_number_to_letter(self, col_num: int) -> str:
         """
-        열 번호를 Excel 열 문자로 변환 (1 -> 'A', 27 -> 'AA')
-        
+        Convert a 1-based column number into an Excel column letter (1 -> 'A', 27 -> 'AA').
+
         Args:
-            col_num: 열 번호 (1부터 시작)
-        
+            col_num: 1-based column number.
+
         Returns:
-            str: Excel 열 문자 (A, B, ..., Z, AA, AB, ...)
-        
+            str: Excel column letter(s) (A, B, ..., Z, AA, AB, ...).
+
         Examples:
             >>> _convert_column_number_to_letter(1)
             'A'
@@ -427,14 +567,14 @@ Examples:
     
     def _convert_column_index_to_letter(self, col_index: int) -> str:
         """
-        0 기반 열 인덱스를 Excel 열 문자로 변환
-        
+        Convert a 0-based column index into an Excel column letter.
+
         Args:
-            col_index: 열 인덱스 (0부터 시작)
-        
+            col_index: 0-based column index.
+
         Returns:
-            str: Excel 열 문자
-        
+            str: Excel column letter(s).
+
         Examples:
             >>> _convert_column_index_to_letter(0)
             'A'
@@ -445,22 +585,25 @@ Examples:
     
     def _is_numeric_string(self, text: str) -> bool:
         """
-        문자열이 숫자를 나타내는지 확인
-        
+        Check whether a string represents a plain decimal number.
+
         Args:
-            text: 확인할 문자열
-        
+            text: Candidate string to test.
+
         Returns:
-            bool: 숫자 문자열 여부
-        
+            bool: True if the string is a valid decimal number, False otherwise.
+
         Note:
-            쉼표(,)가 포함된 숫자도 처리 (예: "1,234.56")
+            Supports thousands-separated numbers (e.g. "1,234.56") while rejecting
+            scientific-notation lookalikes (e.g. SQL_IDs matching "1234e56").
         """
         if not text:
             return False
-        
-        # 쉼표 제거 후 숫자 변환 시도
-        clean_text = text.replace(',', '')
+
+        # Allow plain decimal numbers only after stripping commas (prevents SQL_IDs like '1234e56' from becoming floats/inf)
+        clean_text = text.replace(',', '').strip()
+        if not re.match(r'^[+-]?(?:\d+(?:\.\d*)?|\.\d+)$', clean_text):
+            return False
         try:
             float(clean_text)
             return True
@@ -469,74 +612,77 @@ Examples:
     
     def _is_date_string(self, text: str) -> bool:
         """
-        문자열이 날짜 형식인지 확인
-        
+        Check whether a string starts with an ISO date ('YYYY-MM-DD').
+
         Args:
-            text: 확인할 문자열
-        
+            text: Candidate string to test.
+
         Returns:
-            bool: 날짜 문자열 여부
-        
+            bool: True if the string starts with 'YYYY-MM-DD', False otherwise.
+
         Note:
-            'YYYY-MM-DD' 또는 'YYYY-MM-DD HH:MM:SS' 형식 지원
+            Matches both 'YYYY-MM-DD' and 'YYYY-MM-DD HH:MM:SS'.
         """
         if not text or len(text) < 10:
             return False
         
-        # 날짜 패턴 매칭: YYYY-MM-DD 형식
+        # Match leading YYYY-MM-DD date pattern
         date_pattern = r'^\d{4}-\d{2}-\d{2}'
         return bool(re.match(date_pattern, text))
     
     def _convert_date_to_excel_format(self, date_str: str) -> str:
         """
-        날짜 문자열을 Excel 호환 형식으로 변환
-        
+        Convert a space-separated date/timestamp string into ISO-8601 'T' format.
+
         Args:
-            date_str: 입력 날짜 문자열 (예: '2021-01-26 19:30:00')
-        
+            date_str: Input date string (e.g. '2021-01-26 19:30:00').
+
         Returns:
-            str: Excel 날짜 형식 (예: '2021-01-26T19:30:00')
-        
+            str: ISO-8601 formatted string (e.g. '2021-01-26T19:30:00').
+
         Note:
-            공백을 'T'로 변환하여 ISO 8601 형식으로 만듭니다.
+            Replaces spaces with 'T' for strptime parsing.
         """
-        # 날짜와 시간 사이의 공백을 'T'로 변경
+        # Replace space between date and time with 'T'
         return date_str.replace(' ', 'T')
     
     def process_html_and_create_excel(self) -> None:
         """
-        HTML 파일을 처리하여 Excel 워크북 생성
-        
-        주요 처리 과정:
-        1. Excel 워크북 생성
-        2. 기본 형식 정의
-        3. HTML에서 테이블 추출
-        4. 각 테이블을 워크시트로 변환
-        5. 형식 및 차트 적용
-        6. 워크북 저장
+        Parse the input HTML spool file and build the output Excel workbook.
+
+        Processing Steps:
+        1. Create the xlsxwriter Workbook.
+        2. Register default cell formats.
+        3. Extract per-section HTML tables.
+        4. Resolve SQLn sheet renames and transposed helper overlays.
+        5. Write each worksheet, apply formats/overlays, and embed charts.
+        6. Close and save the workbook.
         """
         if self.debug:
             print(f"\nProcessing HTML file: {self.input_html_path}")
         
-        # Excel 워크북 생성
+        # Create output Excel workbook
         try:
             self.workbook = xlsxwriter.Workbook(self.output_excel_path)
         except Exception as e:
             print(f"Error: Failed to create Excel file: {e}")
             sys.exit(1)
         
-        # 기본 Excel 형식 정의
+        # Initialize default cell formats
         self._define_default_excel_formats()
         
-        # HTML 파일 읽기 및 처리
+        # Read HTML spool file and populate worksheets
         try:
             html_content = self._read_html_file()
             tables = self._extract_all_tables_from_html(html_content)
-            
+
             if self.debug:
                 print(f"Found {len(tables)} tables in HTML")
+
+            # Reorganize tables according to SQLn directives (sheet renaming and transposed overlays)
+            tables = self._collect_transposed_sections(tables)
             
-            # 각 테이블을 워크시트로 변환
+            # Write each remaining table into its own worksheet
             for sheet_name, table_html in tables.items():
                 print(f"Processing sheet: [{sheet_name}]")
                 
@@ -554,7 +700,7 @@ Examples:
             self.workbook.close()
             sys.exit(1)
         
-        # 워크북 저장
+        # Save and close the workbook
         try:
             self.workbook.close()
             if self.debug:
@@ -563,34 +709,121 @@ Examples:
             print(f"Error saving Excel file: {e}")
             sys.exit(1)
     
+    def _collect_transposed_sections(self, tables: Dict[str, str]) -> Dict[str, str]:
+        """
+        Collect cell overlays from transposed helper queries (e.g. load_sql2) onto their
+        target worksheets and remove the consumed helper tables from standalone sheet creation.
+
+        Automates Excel's "Paste Special -> Transpose" step using the same rules as the
+        original OSRAnalyzer macro (Get_Data_From_ORACLE_To_EXCEL2):
+        - Only SQLn directives whose direction is not T2D (e.g. LTOR) are transposed.
+        - Row 0 of the helper table contains column headers (<th>). Each data record is written
+          as one column on the target sheet (fields stacked top-to-bottom) starting at [row.col].
+        - If include_header is TRUE, the header names are written vertically in the starting column
+          first and records start in the next column.
+        - Missing source/target tables are skipped safely. Main T2D queries whose section name differs
+          from their target sheet name are renamed. A single helper query may feed multiple sheets.
+
+        Args:
+            tables: Mapping of {section_name: concatenated_table_html}.
+
+        Returns:
+            Dict[str, str]: Filtered mapping excluding consumed helper sections.
+        """
+        self.sheet_overlays = {}
+        consumed = set()
+        tables = dict(tables)
+        normal = Constants.DIRECTION_T2D
+
+        # Case-insensitive lookup helper (Excel sheet names are case-insensitive)
+        def find(name: str) -> Optional[str]:
+            if name in tables:
+                return name
+            lowered = name.lower()
+            return next((n for n in tables if n.lower() == lowered), None)
+
+        # Pass 1: Rename main T2D sections when query_name differs from target sheet_name
+        #         and no sheet with sheet_name exists yet.
+        for number, query_name, sheet_name, row, col, title, direction in self.ini_sql_config:
+            if direction != normal:
+                continue
+            source = find(query_name)
+            if source is None or find(sheet_name) is not None:
+                continue
+            tables = {(sheet_name if n == source else n): h for n, h in tables.items()}
+            if self.debug:
+                print(f"  Rename sheet: '{source}' -> '{sheet_name}' (SQL{number})")
+
+        # Pass 2: Collect transposed paste cells for non-T2D helper queries.
+        for number, query_name, sheet_name, row, col, title, direction in self.ini_sql_config:
+            if direction == normal:
+                continue
+            source, target = find(query_name), find(sheet_name)
+            if source is None or target is None:
+                if self.debug:
+                    print(f"  Skip SQL{number}: '{query_name}' -> '{sheet_name}' "
+                          f"(not found in HTML)")
+                continue
+
+            rows = self._extract_table_data_from_html(tables[source])
+            if not rows:
+                continue
+            header, records = rows[0], rows[1:]
+            cells = self.sheet_overlays.setdefault(target, [])
+            start_col = col - 1
+
+            if title:
+                for j, name in enumerate(header):
+                    cells.append((row - 1 + j, start_col, name))
+                start_col += 1
+            for k, record in enumerate(records):
+                for j, value in enumerate(record):
+                    cells.append((row - 1 + j, start_col + k, value))
+            consumed.add(source)
+
+            if self.debug:
+                print(f"  Transpose: {source} ({len(records)} records x {len(header)} cols) "
+                      f"-> {target} ({row},{col}) {direction}")
+
+        # Remove consumed helper sections at the end so one helper query can serve multiple sheets
+        return {name: html for name, html in tables.items() if name not in consumed}
+
+    def _apply_sheet_overlays(self) -> None:
+        """
+        Write collected transposed overlay cells onto the active worksheet.
+
+        Invoked after writing the main table data so overlay labels overwrite placeholder
+        column headers at the target coordinates (which chart series names reference for legends).
+        """
+        for row0, col0, value in self.sheet_overlays.get(self.current_sheet_name, []):
+            self.current_worksheet.write_string(row0, col0, value, self.string_format)
+
     def _define_default_excel_formats(self) -> None:
         """
-        Excel에서 사용할 기본 형식 정의
-        
-        정의되는 형식:
-        - 숫자 형식 (###,##0)
-        - 문자열 형식 (텍스트)
-        - 날짜 형식 (yyyy/mm/dd)
-        - 날짜+시간 형식 (yyyy/mm/dd hh:mm)
+        Register default cell formats on the active workbook:
+        - Integer number format with thousands separator (###,##0)
+        - Left-aligned text string format
+        - Date format (yyyy/mm/dd)
+        - Datetime format (yyyy/mm/dd hh:mm)
         """
-        # 숫자 형식: 천 단위 구분 기호 사용
+        # Default numeric format with thousands separator
         self.number_format = self.workbook.add_format({
             'num_format': '###,##0',
             'align': 'right'
         })
         
-        # 문자열 형식
+        # Default text format
         self.string_format = self.workbook.add_format({
             'align': 'left'
         })
         
-        # 날짜 형식 (yyyy/mm/dd)
+        # Date-only format (yyyy/mm/dd)
         self.date_format = self.workbook.add_format({
             'num_format': Constants.DATE_FORMAT_SHORT,
             'align': 'left'
         })
         
-        # 날짜+시간 형식 (yyyy/mm/dd hh:mm)
+        # Date + time format (yyyy/mm/dd hh:mm)
         self.datetime_format = self.workbook.add_format({
             'num_format': Constants.DATE_FORMAT_LONG,
             'align': 'left'
@@ -601,164 +834,156 @@ Examples:
     
     def _read_html_file(self) -> str:
         """
-        HTML 파일을 읽어서 문자열로 반환
-        
+        Read and decode the input HTML file (see _read_text for encoding fallback order).
+
         Returns:
-            str: HTML 파일 내용
-        
-        Raises:
-            Exception: 파일 읽기 실패 시
+            str: Decoded HTML file content.
         """
-        encodings = [Constants.ENCODING_EUC_KR, Constants.ENCODING_UTF8]
-        
-        for encoding in encodings:
-            try:
-                if encoding == Constants.ENCODING_EUC_KR:
-                    with codecs.open(
-                        self.input_html_path,
-                        'r',
-                        encoding=encoding,
-                        errors='replace'
-                    ) as f:
-                        return f.read()
-                else:
-                    with open(
-                        self.input_html_path,
-                        'r',
-                        encoding=encoding,
-                        errors='replace'
-                    ) as f:
-                        return f.read()
-            except UnicodeDecodeError:
-                if self.debug:
-                    print(f"Failed to read with {encoding} encoding, trying next...")
-                continue
-        
-        raise Exception("Failed to read HTML file with supported encodings")
-    
+        return self._read_text(self.input_html_path)
+
     def _extract_all_tables_from_html(self, html_content: str) -> Dict[str, str]:
         """
-        HTML에서 모든 테이블을 추출하여 딕셔너리로 반환
-        
+        Extract all HTML tables grouped by section marker into a dictionary.
+
         Args:
-            html_content: HTML 파일 내용
-        
+            html_content: Full HTML spool text.
+
         Returns:
-            Dict[str, str]: {시트명: 테이블HTML} 형태의 딕셔너리
-        
+            Dict[str, str]: Mapping of {section_name: concatenated_table_html}.
+
         Note:
-            시트명은 "SQL> rem [시트명]" 패턴에서 추출
+            Section names are extracted from "SQL> rem [section_name]" markers.
+            Multiple <table> blocks within the same section (caused by SQL*Plus PAGESIZE breaks)
+            are concatenated in order rather than overwriting earlier pages.
         """
-        tables = {}
+        table_chunks: Dict[str, List[str]] = {}
         current_sheet_name = ''
-        table_html = ''
+        buf: List[str] = []
         in_table = False
-        
-        lines = html_content.split('\n')
-        
+
+        # Use splitlines() so CRLF '\r' characters are stripped immediately and never leak as _x000D_
+        lines = html_content.splitlines()
+
         for line in lines:
-            # 시트 이름 찾기: SQL> rem [시트명]
+            # Detect section marker: SQL> rem [section_name]
             sheet_match = re.search(r'SQL&gt; rem \[([^\]]+)\]', line)
             if sheet_match:
-                # 이전 테이블이 있으면 저장
-                if current_sheet_name and table_html:
-                    tables[current_sheet_name] = table_html
-                    table_html = ''
-                
+                # Flush any unfinished table buffer from the previous section
+                if current_sheet_name and buf:
+                    table_chunks.setdefault(current_sheet_name, []).append('\n'.join(buf))
+                    buf = []
+
                 current_sheet_name = sheet_match.group(1)
                 in_table = False
                 continue
-            
-            # 테이블 시작
+
+            # Start of an HTML <table> block
             if Constants.TABLE_START_TAG in line:
                 in_table = True
-                table_html = line + '\n'
+                buf = [line]
                 continue
-            
-            # 테이블 종료
+
+            # End of an HTML <table> block (append to section chunks to preserve multi-page tables)
             if in_table and Constants.TABLE_END_TAG in line:
-                table_html += line + '\n'
+                buf.append(line)
                 if current_sheet_name:
-                    tables[current_sheet_name] = table_html
-                table_html = ''
+                    table_chunks.setdefault(current_sheet_name, []).append('\n'.join(buf))
+                buf = []
                 in_table = False
                 continue
-            
-            # 테이블 내용 수집
+
+            # Accumulate lines inside <table> ... </table>
             if in_table:
-                table_html += line + '\n'
-        
-        # 마지막 테이블 처리
-        if current_sheet_name and table_html:
-            tables[current_sheet_name] = table_html
-        
-        return tables
-    
+                buf.append(line)
+
+        # Flush trailing table buffer if EOF was reached mid-table
+        if current_sheet_name and buf:
+            table_chunks.setdefault(current_sheet_name, []).append('\n'.join(buf))
+
+        return {name: '\n'.join(chunks) for name, chunks in table_chunks.items()}
+
     def _extract_table_data_from_html(self, table_html: str) -> List[List[str]]:
         """
-        HTML 테이블에서 데이터를 추출하여 2차원 리스트로 반환
-        
+        Parse HTML table markup into a 2D list of cell strings.
+
         Args:
-            table_html: 테이블 HTML 문자열
-        
+            table_html: HTML string containing one or more concatenated <table> blocks.
+
         Returns:
-            List[List[str]]: [[셀1, 셀2, ...], [셀1, 셀2, ...], ...] 형태의 데이터
-        
+            List[List[str]]: Rows of cleaned cell strings [[col1, col2, ...], ...].
+
         Note:
-            - <th> 태그와 <td> 태그를 모두 셀로 처리
-            - HTML 엔티티를 일반 문자로 변환
-            - 빈 셀은 빈 문자열로 처리
+            - Parses both <th> and <td> cells, skipping repeated <th>-only header rows
+              on subsequent SQL*Plus page tables.
+            - Unescapes HTML entities and strips CR ('\r') characters inside cells.
+            - Empty cells become empty strings.
         """
         table_data = []
-        
-        # HTML에서 행 추출
-        rows = re.findall(r'<tr[^>]*>(.*?)</tr>', table_html, re.DOTALL | re.IGNORECASE)
-        
-        for row_html in rows:
-            row_data = []
-            
-            # 행에서 셀 추출 (th 또는 td 태그)
-            cells = re.findall(
-                r'<t[hd][^>]*>(.*?)</t[hd]>',
-                row_html,
-                re.DOTALL | re.IGNORECASE
-            )
-            
-            for cell_html in cells:
-                # HTML 태그 제거
-                cell_text = re.sub(r'<[^>]+>', '', cell_html)
-                
-                # HTML 엔티티 변환
-                cell_text = (cell_text
-                            .replace('&nbsp;', ' ')
-                            .replace('&lt;', '<')
-                            .replace('&gt;', '>')
-                            .replace('&amp;', '&')
-                            .replace('&quot;', '"'))
-                
-                # 앞뒤 공백 제거
-                cell_text = cell_text.strip()
-                
-                row_data.append(cell_text)
-            
-            if row_data:  # 빈 행이 아니면 추가
-                table_data.append(row_data)
-        
+
+        blocks = re.findall(r'<table[^>]*>(.*?)</table>', table_html, re.DOTALL | re.IGNORECASE)
+        if not blocks:
+            blocks = [table_html]
+
+        for block_idx, block_html in enumerate(blocks):
+            rows = re.findall(r'<tr[^>]*>(.*?)</tr>', block_html, re.DOTALL | re.IGNORECASE)
+
+            for row_html in rows:
+                # Skip repeated column header rows (<th>-only rows) emitted on page 2+ tables
+                if block_idx > 0 and re.search(r'<th\b', row_html, re.IGNORECASE) and not re.search(r'<td\b', row_html, re.IGNORECASE):
+                    continue
+
+                row_data = []
+
+                # Extract cells (<th> or <td>) from the row
+                cells = re.findall(
+                    r'<t[hd][^>]*>(.*?)</t[hd]>',
+                    row_html,
+                    re.DOTALL | re.IGNORECASE
+                )
+
+                for cell_html in cells:
+                    # Strip inner HTML tags
+                    cell_text = re.sub(r'<[^>]+>', '', cell_html)
+
+                    # Unescape HTML character entities
+                    cell_text = (cell_text
+                                .replace('&nbsp;', ' ')
+                                .replace('&lt;', '<')
+                                .replace('&gt;', '>')
+                                .replace('&amp;', '&')
+                                .replace('&quot;', '"')
+                                .replace('&#39;', "'")
+                                .replace('&apos;', "'"))
+
+                    # Normalize intra-cell line breaks (strip '\r' to prevent Excel _x000D_ corruption)
+                    cell_text = cell_text.replace('\r\n', '\n').replace('\r', '\n').strip()
+
+                    row_data.append(cell_text)
+
+                if row_data:  # Append non-empty rows only
+                    table_data.append(row_data)
+
         return table_data
     
     def _write_table_data_to_worksheet(self, table_data: List[List[str]]) -> None:
         """
-        테이블 데이터를 Excel 워크시트에 작성
-        
+        Write parsed 2D table data to a new Excel worksheet, apply overlays, and add charts.
+
         Args:
-            table_data: 2차원 리스트 형태의 테이블 데이터
-        
+            table_data: 2D list of cell strings (row 0 = column headers).
+
         Note:
-            - INI 설정에 따라 셀 형식 자동 적용
-            - 숫자/날짜 자동 감지 및 형식 적용
-            - 차트 자동 생성
+            - Applies custom INI cell formats when configured.
+            - Automatically converts dates, timestamps, and decimal numbers.
+            - Embeds configured charts on the worksheet.
         """
-        # 워크시트 생성
+        # Truncate at MAX_EXCEL_ROWS if exceeded (xlsxwriter silently drops rows past the limit)
+        if len(table_data) > Constants.MAX_EXCEL_ROWS:
+            print(f"  Warning: sheet [{self.current_sheet_name}] has {len(table_data)} rows; "
+                  f"truncated to {Constants.MAX_EXCEL_ROWS} (xlsx limit)")
+            table_data = table_data[:Constants.MAX_EXCEL_ROWS]
+        
+        # Add worksheet to workbook
         try:
             self.current_worksheet = self.workbook.add_worksheet(self.current_sheet_name)
         except Exception as e:
@@ -766,28 +991,32 @@ Examples:
                 print(f"Warning: Failed to create worksheet '{self.current_sheet_name}': {e}")
             return
         
-        # INI 설정에 정의된 형식 객체 생성
+        # Ensure xlsxwriter Format objects exist for this sheet's INI FORMAT rules
         self._create_format_objects_for_current_sheet()
+        self.current_header_row = table_data[0] if table_data else []
         
-        # 데이터 쓰기
+        # Write rows and cells
         for row_idx, row_data in enumerate(table_data):
             self.current_row_index = row_idx
             
             for col_idx, cell_value in enumerate(row_data):
                 self.current_col_index = col_idx
                 
-                # 셀에 적용할 형식 확인
+                # Check whether an INI FORMAT rule covers this cell
                 has_custom_format, custom_format_key = self._check_cell_has_custom_format(
                     row_idx, col_idx
                 )
                 
-                # 셀 값 쓰기 (형식에 따라 처리)
+                # Write typed cell value with the appropriate format
                 self._write_cell_value(
                     row_idx, col_idx, cell_value,
                     has_custom_format, custom_format_key
                 )
         
-        # 차트 추가
+        # Apply transposed helper query overlays (SQLn LTOR) onto target cells
+        self._apply_sheet_overlays()
+
+        # Create and insert charts configured for this sheet
         self._add_charts_to_worksheet(len(table_data))
         
         if self.debug:
@@ -795,10 +1024,10 @@ Examples:
     
     def _create_format_objects_for_current_sheet(self) -> None:
         """
-        현재 시트에 대한 INI 형식 설정을 Excel 형식 객체로 생성
-        
+        Create and cache xlsxwriter Format objects required by the active worksheet's INI rules.
+
         Note:
-            형식 객체는 excel_format_cache에 캐싱되어 재사용됩니다.
+            Format objects are cached in excel_format_cache for reuse across sheets.
         """
         if self.current_sheet_name not in self.ini_format_config:
             return
@@ -807,7 +1036,7 @@ Examples:
             if len(format_config) >= 5:
                 format_str = format_config[4]
                 
-                # 이미 생성된 형식이 아니면 새로 생성
+                # Register format object if not already cached
                 if format_str not in self.excel_format_cache:
                     self.excel_format_cache[format_str] = self.workbook.add_format({
                         'num_format': format_str,
@@ -818,19 +1047,19 @@ Examples:
         self, row: int, col: int
     ) -> Tuple[bool, str]:
         """
-        특정 셀에 INI 설정 형식이 적용되는지 확인
-        
+        Check whether a 0-based (row, col) coordinate falls within an INI FORMAT range.
+
         Args:
-            row: 행 인덱스 (0부터 시작)
-            col: 열 인덱스 (0부터 시작)
-        
+            row: 0-based row index.
+            col: 0-based column index.
+
         Returns:
-            Tuple[bool, str]: (형식 적용 여부, 형식 키)
+            Tuple[bool, str]: (has_format, format_string).
         """
         if self.current_sheet_name not in self.ini_format_config:
             return False, ''
         
-        # 1-based 인덱스로 변환 (INI 파일은 1부터 시작)
+        # Convert to 1-based coordinates used in INI FORMAT specifications
         row_1based = row + 1
         col_1based = col + 1
         
@@ -838,7 +1067,7 @@ Examples:
             if len(format_config) >= 5:
                 r1, c1, r2, c2, format_str = format_config
                 
-                # 범위 내에 있는지 확인
+                # Check inclusive coordinate bounds
                 if r1 <= row_1based <= r2 and c1 <= col_1based <= c2:
                     return True, format_str
         
@@ -853,43 +1082,46 @@ Examples:
         custom_format_key: str
     ) -> None:
         """
-        셀에 값을 쓰기 (타입에 따라 적절한 형식 적용)
-        
+        Write a single cell value using the appropriate Excel data type and cell format.
+
         Args:
-            row: 행 인덱스
-            col: 열 인덱스
-            value: 셀 값
-            has_custom_format: 사용자 정의 형식 적용 여부
-            custom_format_key: 사용자 정의 형식 키
+            row: 0-based row index.
+            col: 0-based column index.
+            value: Raw cell string extracted from HTML.
+            has_custom_format: Whether a custom INI FORMAT applies to this cell.
+            custom_format_key: Key into excel_format_cache when has_custom_format is True.
         """
         if not value:
-            # 빈 셀
-            self.current_worksheet.write_string(row, col, '', self.string_format)
+            # Write a true Excel blank cell so empty/NULL values are not plotted as 0 on line charts
+            self.current_worksheet.write_blank(row, col, None, self.string_format)
             return
-        
-        # 사용자 정의 형식이 있는 경우
-        if has_custom_format and custom_format_key in self.excel_format_cache:
-            custom_format = self.excel_format_cache[custom_format_key]
-            
-            # 숫자로 변환 시도
-            if self._is_numeric_string(value):
-                try:
-                    num_value = float(value.replace(',', ''))
-                    self.current_worksheet.write_number(row, col, num_value, custom_format)
-                    return
-                except ValueError:
-                    pass
-        
-        # 첫 번째 열의 날짜 확인
-        if col == 0 and self._is_date_string(value):
+
+        # Always write the header row (row 0) as text
+        if row == 0:
+            self.current_worksheet.write_string(row, col, value, self.string_format)
+            return
+
+        # Write full timestamps ('yyyy-mm-dd hh24:mi:ss') as Excel datetime regardless of column position
+        if re.match(Constants.TIMESTAMP_PATTERN, value):
             self._write_date_value(row, col, value)
             return
-        
-        # 일반 숫자 확인
-        if col > 0 and self._is_numeric_string(value):
+
+        # Write date-only values ('yyyy-mm-dd') as Excel date values regardless of column position
+        if re.match(r'^\d{4}-\d{2}-\d{2}$', value):
+            self._write_date_value(row, col, value)
+            return
+
+        # Preserve identifier columns such as SQL_ID as strings even if all characters are digits
+        if col < len(self.current_header_row):
+            col_key = re.sub(r'[\s_]+', '', self.current_header_row[col]).upper()
+            if col_key in {'SQLID', 'MAXQUERYSQLID', 'TOPSQLID', 'PREVSQLID'}:
+                self.current_worksheet.write_string(row, col, value, self.string_format)
+                return
+
+        # Write numeric strings as numbers across all columns (including Col A: SNAP_ID, INST_ID, RANK)
+        if self._is_numeric_string(value):
             try:
                 num_value = float(value.replace(',', ''))
-                
                 if has_custom_format and custom_format_key in self.excel_format_cache:
                     self.current_worksheet.write_number(
                         row, col, num_value,
@@ -903,68 +1135,68 @@ Examples:
                 return
             except ValueError:
                 pass
-        
-        # 기본: 문자열로 처리
+
+        # Fallback: write as plain text string
         self.current_worksheet.write_string(row, col, value, self.string_format)
-    
+
     def _write_date_value(self, row: int, col: int, date_str: str) -> None:
         """
-        날짜 값을 Excel 날짜 형식으로 쓰기
-        
+        Parse a date or timestamp string and write it as an Excel datetime cell.
+
         Args:
-            row: 행 인덱스
-            col: 열 인덱스
-            date_str: 날짜 문자열
+            row: 0-based row index.
+            col: 0-based column index.
+            date_str: Date ('YYYY-MM-DD') or timestamp ('YYYY-MM-DD HH:MM:SS') string.
         """
         excel_date_str = self._convert_date_to_excel_format(date_str)
-        
+
         try:
-            # 시간 정보가 있는지 확인
-            has_time = len(date_str) > 10 and not date_str.endswith(' 00:00:00')
-            
+            # Keep datetime format whenever an explicit time component (HH:MM:SS) is present, including midnight (00:00:00)
+            has_time = len(date_str.strip()) > 10
+
             if has_time:
-                # 날짜+시간 형식
+                # Date + time value
                 dt_obj = datetime.strptime(
                     excel_date_str[:19],
                     Constants.EXCEL_DATE_FORMAT
                 )
                 self.current_worksheet.write_datetime(row, col, dt_obj, self.datetime_format)
             else:
-                # 날짜만
+                # Date-only value
                 dt_obj = datetime.strptime(
                     excel_date_str[:10],
                     Constants.EXCEL_DATE_SHORT_FORMAT
                 )
                 self.current_worksheet.write_datetime(row, col, dt_obj, self.date_format)
-        
+
         except ValueError:
-            # 날짜 파싱 실패시 문자열로 처리
+            # Fall back to text string if date parsing fails
             self.current_worksheet.write_string(row, col, date_str, self.string_format)
     
     def _add_charts_to_worksheet(self, num_rows: int) -> None:
         """
-        INI 설정에 따라 차트를 생성하고 워크시트에 추가
-        
+        Create and insert all INI-configured charts for the active worksheet.
+
         Args:
-            num_rows: 테이블의 전체 행 수 ('E'를 실제 행 수로 치환용)
-        
-        차트 생성 과정:
-        1. INI 파일의 차트 설정 읽기
-        2. 데이터 범위 파싱 및 'E'를 실제 행 수로 치환
-        3. Excel 차트 객체 생성 (선형, 막대 등)
-        4. 데이터 시리즈 추가 (X축, Y축 데이터)
-        5. 차트 속성 설정 (제목, 축, 범례)
-        6. 워크시트에 차트 삽입
+            num_rows: Total worksheet row count including header (used to replace 'E').
+
+        Chart Creation Steps:
+        1. Look up chart definitions for the active sheet.
+        2. Parse series/category ranges and substitute 'E' with num_rows.
+        3. Instantiate an xlsxwriter Chart object (line, bar, etc.).
+        4. Add X-axis categories and Y-axis data series.
+        5. Configure chart title, axes, legend, and border.
+        6. Anchor the chart on the worksheet.
         """
-        # 현재 시트에 차트 설정이 없으면 종료
-        if self.current_sheet_name not in self.ini_chart_config:
+        # Skip if no charts are configured for this sheet or if there are no data rows
+        if self.current_sheet_name not in self.ini_chart_config or num_rows < 2:
             return
         
         if self.debug:
             chart_count = len(self.ini_chart_config[self.current_sheet_name])
             print(f"  Adding {chart_count} charts to worksheet")
         
-        # 각 차트 설정에 대해 처리
+        # Build and insert each configured chart
         for idx, chart_config in enumerate(
             self.ini_chart_config[self.current_sheet_name], 1
         ):
@@ -981,33 +1213,34 @@ Examples:
         chart_num: int
     ) -> None:
         """
-        개별 차트를 생성하고 워크시트에 삽입
-        
+        Instantiate, configure, and insert a single chart into the active worksheet.
+
         Args:
-            chart_config: 차트 설정 튜플
-            num_rows: 총 행 수
-            chart_num: 차트 번호 (디버깅용)
+            chart_config: Parsed chart configuration tuple.
+            num_rows: Total row count on the worksheet.
+            chart_num: 1-based chart sequence number (for diagnostics).
         """
-        # 차트 설정 언패킹
+        # Unpack chart configuration tuple
         (range_str, title, pos_row, pos_col,
          chart_type, x_format, x_title) = chart_config
+        title = self._resolve_title_vars(title)
         
         if self.debug:
             print(f"    Chart {chart_num}: {title} at ({pos_row}, {pos_col})")
         
-        # Excel 차트 객체 생성
+        # Create embedded xlsxwriter chart object
         chart = self.workbook.add_chart({
             'type': chart_type.lower(),
             'embedded': True
         })
         
-        # 데이터 범위 파싱 및 시리즈 추가
+        # Parse range specification and attach data series
         self._add_series_to_chart(chart, range_str, num_rows)
         
-        # 차트 속성 설정
+        # Configure title, axis formats/rotation, and legend
         self._configure_chart_properties(chart, title, x_format, x_title)
         
-        # 워크시트에 차트 삽입 (1-based를 0-based로 변환)
+        # Insert chart at 0-based anchor coordinates
         self.current_worksheet.insert_chart(pos_row - 1, pos_col - 1, chart)
     
     def _add_series_to_chart(
@@ -1017,24 +1250,24 @@ Examples:
         num_rows: int
     ) -> None:
         """
-        차트에 데이터 시리즈 추가
-        
+        Parse a slash-delimited chart range specification and add series to the chart.
+
         Args:
-            chart: Excel 차트 객체
-            range_str: 데이터 범위 문자열
-            num_rows: 총 행 수
+            chart: Target xlsxwriter Chart object.
+            range_str: Chart range specification (first segment = categories, remaining = series).
+            num_rows: Total row count on the worksheet.
         """
-        # 데이터 범위 파싱 (여러 범위를 '/'로 구분)
+        # Split range specification into '/' segments
         ranges = range_str.split('/')
         
         categories_range = None
         
         for idx, range_part in enumerate(ranges):
-            # 'E'를 실제 행 수로 치환
+            # Substitute 'E' with the actual row count
             range_part = range_part.replace('E', str(num_rows))
             range_part = range_part.strip().rstrip(']')
             
-            # 범위를 좌표로 파싱 (행1.열1:행2.열2)
+            # Parse segment coordinates (row1.col1:row2.col2)
             parts = re.split(r'[.:]', range_part)
             
             if len(parts) != 4:
@@ -1045,17 +1278,17 @@ Examples:
             except ValueError:
                 continue
             
-            # 0-based 인덱스로 조정
+            # Convert 1-based INI coordinates to 0-based xlsxwriter indices
             r1 -= 1
             c1 -= 1
             r2 -= 1
             c2 -= 1
             
             if idx == 0:
-                # 첫 번째 범위는 카테고리(X축) 데이터
+                # First segment defines X-axis category labels
                 categories_range = (r1, c1, r2, c2)
             else:
-                # 이후 범위는 데이터 시리즈
+                # Subsequent segments define Y-axis data series columns
                 self._add_data_series(chart, r1, c1, r2, c2, categories_range)
     
     def _add_data_series(
@@ -1068,32 +1301,34 @@ Examples:
         categories_range: Optional[Tuple[int, int, int, int]]
     ) -> None:
         """
-        차트에 개별 데이터 시리즈 추가
-        
+        Add one chart series per column across (c1 .. c2).
+
         Args:
-            chart: Excel 차트 객체
-            r1, c1, r2, c2: 데이터 범위 좌표
-            categories_range: 카테고리 범위 좌표
+            chart: Target xlsxwriter Chart object.
+            r1, c1, r2, c2: 0-based data range coordinates.
+            categories_range: Optional 0-based category range tuple.
         """
         for col in range(c1, c2 + 1):
-            # 시리즈 이름 설정
+            # Determine series legend name and starting data row
             if r1 == 0:
-                # 첫 행을 시리즈 이름으로 사용
+                # Use row 0 header cell as the series name and start values at row 1
                 series_name = [self.current_sheet_name, 0, col]
                 values_r1 = 1
             else:
                 series_name = ''
                 values_r1 = r1
             
-            # 시리즈 추가
+            # Build series definition
             series_config = {
                 'name': series_name,
                 'values': [self.current_sheet_name, values_r1, col, r2, col]
             }
             
-            # 카테고리 범위 추가
+            # Exclude row 0 header from categories as well so category rows align with data rows
             if categories_range:
                 cat_r1, cat_c1, cat_r2, cat_c2 = categories_range
+                if cat_r1 == 0:
+                    cat_r1 = 1
                 series_config['categories'] = [
                     self.current_sheet_name,
                     cat_r1, cat_c1, cat_r2, cat_c2
@@ -1101,6 +1336,36 @@ Examples:
             
             chart.add_series(series_config)
     
+    def _resolve_title_vars(self, title: str) -> str:
+        """
+        Substitute @@hostname@@ and @@instance@@ placeholders in chart titles from the HTML filename.
+
+        Reproduces the legacy DPI macro behavior (`VARIABLE5=@@hostname@@`) without Excel macros.
+        Supported filename patterns:
+            AWR_<host>_<inst>_<yyyymmdd_hhmi>.html (legacy)
+            AWR_<NODE|RAC>_<initag>_<host>_<inst>_<yyyymmdd_hhmiss>.html
+        Because <initag> may contain underscores, host and inst are taken as the last two tokens
+        preceding the date/time suffix. Both hhmi (legacy) and hhmiss (current) timestamps are accepted.
+
+        Args:
+            title: Raw chart title string from the INI CHART definition.
+
+        Returns:
+            str: Title with placeholders resolved (or stripped cleanly if filename cannot be parsed).
+        """
+        if '@@' not in title:
+            return title
+        base = os.path.basename(self.input_html_path)
+        m = re.match(r'(AWR_(?:(?:NODE|RAC)_)?.*)_\d{8}_\d{4}(?:\d{2})?', base)
+        host, inst = '', ''
+        if m:
+            tokens = m.group(1).split('_')
+            if len(tokens) >= 3:
+                host, inst = tokens[-2], tokens[-1]
+        return (title.replace('@@hostname@@', host)
+                     .replace('@@instance@@', inst)
+                     .replace(' -  ', ' - ').rstrip(' -'))
+
     def _configure_chart_properties(
         self,
         chart: Any,
@@ -1109,64 +1374,72 @@ Examples:
         x_title: str
     ) -> None:
         """
-        차트 속성 설정 (제목, 축, 범례 등)
-        
+        Configure chart title, X-axis formatting/rotation, legend placement, and chart border.
+
         Args:
-            chart: Excel 차트 객체
-            title: 차트 제목
-            x_format: X축 숫자 형식
-            x_title: X축 제목
+            chart: Target xlsxwriter Chart object.
+            title: Resolved chart title.
+            x_format: X-axis number format from the INI file.
+            x_title: X-axis title.
         """
-        # 차트 제목 설정
+        # Set chart title
         if title:
             chart.set_title({
                 'name': title,
                 'name_font': {'name': 'Arial', 'size': 10}
             })
         
-        # X축 설정
-        if x_title or x_format:
-            x_axis_config = {}
-            if x_title:
-                x_axis_config['name'] = x_title
-            if x_format:
-                x_axis_config['num_format'] = x_format
+        # Configure X-axis (title, number format, and label rotation)
+        x_axis_config = {}
+        if x_title:
+            x_axis_config['name'] = x_title
+        # Unify time axes (empty x_format or containing 'hh') to --x-format (default 'mm-dd hh:mm')
+        # and force text_axis=True so 5-minute intervals are not collapsed onto day buckets by Excel.
+        if self.x_time_format and (not x_format or 'hh' in x_format.lower()):
+            x_axis_config['num_format'] = self.x_time_format
+            x_axis_config['text_axis'] = True
+        elif x_format:
+            x_axis_config['num_format'] = x_format
+        if self.x_label_rotation:
+            # Rotate timestamp labels so they do not overlap (-90 = vertical, read bottom-to-top)
+            x_axis_config['num_font'] = {'rotation': self.x_label_rotation}
+        if x_axis_config:
             chart.set_x_axis(x_axis_config)
         
-        # 범례 위치 설정
+        # Configure legend placement
         if self.current_sheet_name == 'dbsize':
             chart.set_legend({'position': 'none'})
         else:
             chart.set_legend({'position': 'overlay_right'})
         
-        # 차트 테두리 제거
+        # Remove outer chart border
         chart.set_chartarea({'border': {'none': True}})
     
     def run(self) -> None:
         """
-        변환 프로세스 전체를 실행하는 메인 메서드
-        
-        실행 순서:
-        1. 명령행 인수 파싱
-        2. INI 파일 경로 확인 (자동 추출 또는 지정)
-        3. INI 파일 존재 여부 확인
-        4. INI 설정 파싱
-        5. HTML 처리 및 Excel 생성
-        6. 완료 메시지 출력
-        
+        Execute the end-to-end HTML-to-Excel conversion workflow.
+
+        Workflow:
+        1. Parse CLI arguments.
+        2. Determine INI file path (CLI option or auto-extracted from HTML).
+        3. Resolve and verify INI file existence.
+        4. Load INI SQL/FORMAT/CHART configuration.
+        5. Parse HTML tables and generate the formatted Excel workbook.
+        6. Print completion summary.
+
         Raises:
-            SystemExit: 오류 발생 시
+            SystemExit: On missing input files or unrecoverable conversion errors.
         """
         print("=" * 70)
         print("AWR HTML to Excel Converter")
         print("=" * 70)
         
-        # 1. 명령행 인수 파싱
+        # 1. Parse command-line arguments
         self.parse_command_line_arguments()
         
-        # 2. INI 파일 경로 확인
+        # 2. Determine INI configuration path
         if not self.ini_config_path:
-            # INI 파일이 지정되지 않았으면 HTML에서 자동 추출
+            # Auto-extract INI filename from HTML marker when -n/--ini is omitted
             print("\nExtracting INI file name from HTML...")
             self.ini_config_path = self.extract_ini_filename_from_html()
             
@@ -1175,25 +1448,28 @@ Examples:
                 print("Please specify INI file using -n option.")
                 sys.exit(1)
         
-        # 3. INI 파일 존재 여부 확인
+        # 3. Verify INI file existence (searching fallback directories if needed)
+        if not os.path.exists(self.ini_config_path):
+            self.ini_config_path = self._resolve_ini_path(self.ini_config_path)
+
         if not os.path.exists(self.ini_config_path):
             print(f"Error: INI configuration file not found: {self.ini_config_path}")
             sys.exit(1)
         
-        # 파일 정보 출력
+        # Print resolved file paths
         print(f"\nInput HTML file : {self.input_html_path}")
         print(f"Output Excel file: {self.output_excel_path}")
         print(f"INI config file  : {self.ini_config_path}")
         
-        # 4. INI 설정 파싱
+        # 4. Parse INI configuration
         print("\nLoading INI configuration...")
         self.load_and_parse_ini_configuration()
         
-        # 5. HTML 처리 및 Excel 생성
+        # 5. Convert HTML tables into Excel workbook
         print("\nConverting HTML to Excel...")
         self.process_html_and_create_excel()
         
-        # 6. 완료 메시지
+        # 6. Print completion message
         print("\n" + "=" * 70)
         print(f"[OK] Conversion completed successfully!")
         print(f"[OK] Excel file created: {self.output_excel_path}")
@@ -1202,9 +1478,7 @@ Examples:
 
 def main():
     """
-    프로그램 진입점
-    
-    AWRHtmlToExcelConverter 인스턴스를 생성하고 실행합니다.
+    CLI entry point: instantiate AWRHtmlToExcelConverter and run it.
     """
     try:
         converter = AWRHtmlToExcelConverter()
