@@ -1,4 +1,4 @@
-# AwrOne / TprONE
+# AwrOne — Oracle AWR to Excel
 
 Oracle AWR 데이터를 차트가 포함된 Excel 워크북으로 변환하는 도구입니다.
 
@@ -7,7 +7,7 @@ SQL*Plus HTML 스풀로 DB에서 수집한 뒤 지표별 라인 차트가 들어
 `.xlsx`로 변환합니다.
 
 > English version: [README.md](README.md)
-> (Tibero TPR 지원은 예정되어 있으며, 현재 INI 세트와 도구는 Oracle AWR 전용입니다.)
+> (Tibero TPR 형제 도구 **TprOne**은 개발 중입니다 — 리포지터리 루트 참조.)
 
 ## 파이프라인
 

@@ -1,4 +1,4 @@
-# AwrOne / TprONE
+# AwrOne — Oracle AWR to Excel
 
 Convert Oracle AWR data into Excel workbooks with charts.
 
@@ -7,7 +7,7 @@ The pipeline collects from the database via SQL*Plus HTML spool and turns the
 result into a formatted `.xlsx` with line charts per metric.
 
 > Korean version: [README_ko.md](README_ko.md)
-> (Tibero TPR support is planned; the current INI set and tooling are Oracle AWR only.)
+> (The Tibero TPR sibling tool **TprOne** is under development — see the repository root.)
 
 ## Pipeline
 

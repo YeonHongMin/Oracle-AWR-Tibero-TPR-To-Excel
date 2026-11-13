@@ -1,4 +1,4 @@
-# TprONE (Tibero) — under development
+# TprOne (Tibero) — under development
 
 Tibero TPR (performance report) data to Excel workbooks with charts.
 
