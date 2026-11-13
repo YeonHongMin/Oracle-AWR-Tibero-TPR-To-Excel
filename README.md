@@ -15,16 +15,62 @@ result into a formatted `.xlsx` with line charts per metric.
 INI ──AwrONE_ini_to_sql.py──▶ .sql ──SQL*Plus (spool HTML)──▶ .html ──AwrONE_html_to_excel.py──▶ .xlsx (with charts)
 ```
 
+## Usage
+
+### 1. Generate the collection SQL
+
 ```bash
-# 1) ini -> sql
 python AwrONE_ini_to_sql.py -i Simple_AwrOne_2node.ini -o out.sql
+```
 
-# 2) collect from the DB (snapshot range is set via snapdate_from/to in the out.sql header)
+### 2. Set the collection time window (required)
+
+Open the generated `out.sql` and edit the two lines near the top:
+
+```sql
+exec :snapdate_from:=202611091705
+exec :snapdate_to:=202611092359
+```
+
+- Format: `YYYYMMDDHH24MI` (year, month, day, hour, minute — local DB time).
+- The shipped defaults (`202601010000`–`202601150000`) are placeholders;
+  always set the range you actually want (e.g. an incident window or the last day).
+- Snapshots whose interval overlaps the window are collected. If none overlap,
+  the script stops with `ORA-20001: No AWR snapshots found ...`.
+- `:inst_no` and `:dbid` are auto-detected from the connection — you only edit
+  the two dates. For RAC ini files the instance numbers are preset
+  (`:inst_no1:=1` … `:inst_noN:=N`); adjust them if your instances are
+  numbered differently.
+
+### 3. Collect with SQL*Plus
+
+Run anywhere that has SQL*Plus and network access to the DB — there is no fixed
+directory; the HTML report is written to the current directory.
+
+- Single-family ini: run **once per node**, connecting to each instance
+  (put `INSTANCE_NAME` in the connect string).
+- RAC-family ini: run **once** against any instance — the queries already cover
+  the whole cluster. (A `4node` ini on a 3-node cluster still works; the missing
+  node shows as `inst#4` with no data.)
+
+```bash
+# Single family — once per node
+sqlplus appdba/manager@"(DESCRIPTION=(ADDRESS=(PROTOCOL=TCP)(HOST=<node-vip>)(PORT=1521))(CONNECT_DATA=(SERVICE_NAME=<svc>)(INSTANCE_NAME=<inst>)))" @out.sql
+
+# RAC family — once, any node
 sqlplus appdba/manager@<host>/<svc> @out.sql
+```
 
-# 3) html -> xlsx (with charts)
+### 4. Convert to Excel
+
+```bash
 python AwrONE_html_to_excel.py -i AWR_RAC_Simple_2node_rac1_PROD1_20261110_192130.html
 ```
+
+The converter reads the source ini name recorded inside the HTML and searches
+the report's directory, the working directory, and the script directory; use
+`-n <ini>` to override. The `.xlsx` (with charts) is written next to the HTML.
+For `*_with_ash.ini` collections, convert the extra `..._ASH.html` the same way.
 
 ## Sample output
 

@@ -15,16 +15,59 @@ SQL*Plus HTML 스풀로 DB에서 수집한 뒤 지표별 라인 차트가 들어
 INI ──AwrONE_ini_to_sql.py──▶ .sql ──SQL*Plus(spool HTML)──▶ .html ──AwrONE_html_to_excel.py──▶ .xlsx(차트 포함)
 ```
 
+## 사용법
+
+### 1. 수집용 SQL 생성
+
 ```bash
-# 1) ini -> sql 생성
 python AwrONE_ini_to_sql.py -i Simple_AwrOne_2node.ini -o out.sql
+```
 
-# 2) DB 접속해 수집 (스냅샷 범위는 out.sql 헤더의 snapdate_from/to 로 지정)
-sqlplus appdba/manager@<host>/<svc> @out.sql
+### 2. 수집 시간대 지정 (필수)
 
-# 3) html -> xlsx (차트 포함)
+생성된 `out.sql` 상단의 두 줄을 원하는 구간으로 바꿉니다:
+
+```sql
+exec :snapdate_from:=202611091705
+exec :snapdate_to:=202611092359
+```
+
+- 형식: `YYYYMMDDHH24MI` (년월일시분, DB 서버 로컬 시각).
+- 기본값(`202601010000`~`202601150000`)은 자리 표시자이므로 반드시 원하는 구간
+  (예: 장애 시간대, 최근 하루)으로 바꿔서 실행하세요.
+- 구간과 겹치는 스냅샷을 수집하며, 겹치는 스냅샷이 없으면
+  `ORA-20001: No AWR snapshots found ...` 오류로 멈춥니다.
+- `:inst_no`, `:dbid`는 접속 정보에서 자동으로 얻으므로 날짜 두 줄만 바꾸면 됩니다.
+  RAC ini는 인스턴스 번호가 `:inst_no1:=1` … `:inst_noN:=N`으로 미리 설정돼 있고,
+  인스턴스 번호가 다르면 이 값들을 수정하면 됩니다.
+
+### 3. SQL*Plus로 수집
+
+SQL*Plus와 DB 네트워크 접속만 있으면 아무 곳에서나 실행할 수 있습니다. 고정된
+디렉터리는 없으며, 결과 HTML은 현재 디렉터리에 생깁니다.
+
+- Single 계열 ini: `INSTANCE_NAME`을 지정해 각 인스턴스에 접속, **노드별로 1회씩** 실행.
+- RAC 계열 ini: 아무 인스턴스에나 **1회** 실행 — 쿼리가 클러스터 전체를 커버합니다.
+  (3노드 클러스터에서 `4node` ini를 써도 동작하며, 없는 노드는 `inst#4`로 표시되고 데이터는 비어 있습니다.)
+
+```bash
+# Single 계열 — 노드별 1회
+sqlplus appdba/manager@"(DESCRIPTION=(ADDRESS=(PROTOCOL=TCP)(HOST=<노드-vip>)(PORT=1521))(CONNECT_DATA=(SERVICE_NAME=<서비스>)(INSTANCE_NAME=<인스턴스>)))" @out.sql
+
+# RAC 계열 — 아무 노드에 1회
+sqlplus appdba/manager@<host>/<서비스> @out.sql
+```
+
+### 4. Excel로 변환
+
+```bash
 python AwrONE_html_to_excel.py -i AWR_RAC_Simple_2node_rac1_PROD1_20261110_192130.html
 ```
+
+변환기는 HTML 안에 기록된 ini 이름을 읽어, 리포트 디렉터리 → 현재 디렉터리 →
+스크립트 디렉터리 순으로 해당 ini를 찾습니다. `-n <ini>`로 직접 지정할 수도 있습니다.
+차트가 포함된 `.xlsx`는 HTML 옆에 생깁니다. `*_with_ash.ini`로 수집했다면 추가로 생긴
+`..._ASH.html`도 같은 방법으로 변환하면 됩니다.
 
 ## 출력 예시
 
