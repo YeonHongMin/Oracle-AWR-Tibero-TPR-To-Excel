@@ -92,8 +92,18 @@ For `*_with_ash.ini` collections, convert the extra `..._ASH.html` the same way.
 | `Simple_AwrOne_Single_with_ash.ini` | Same + ASH (separate `_ASH.html`) | 〃 |
 | `Full_AwrOne_Single.ini` | Single-instance full set (Top SQL, segments, ...) | 〃 |
 | `Full_AwrOne_Single_with_ash.ini` | Same + ASH | 〃 |
-| `Simple_AwrOne_{2,3,4,7,8}node.ini` | RAC node-comparison key metrics | Once (cluster-wide) |
-| `Full_AwrOne_{2,3,4,7,8}node.ini` | RAC node-comparison full set | 〃 |
+| `Simple_AwrOne_{2..8}node.ini` | RAC node-comparison key metrics (2 to 8 nodes) | Once (cluster-wide) |
+| `Full_AwrOne_{2..8}node.ini` | RAC node-comparison full set (2 to 8 nodes) | 〃 |
+
+### Simple vs Full
+
+- **Single-instance (`Simple` 33 sheets vs `Full` 102 sheets)**:
+  - **`Simple`**: Fast daily/incident triage — DB/snap info, parameters, load profile, RAC load & GC efficiency, PGA/SGA/Undo/Redo/log switches, wait events (`wait5`/`wait20`/`wait_disk`/`redo_wait`/`wait_buffer`), time model, OS stats, instance activity, latch/enq/libcache, and key sysstat.
+  - **`Full`**: Everything in `Simple` **plus** Top SQL by 7 metrics (elapsed, CPU, buffer gets, disk reads, executions, parses, cluster wait — series + summary + raw), 11 segment statistics (`seg_stat_*`), tablespace/datafile I/O (`tbsstat*`, `filestat*`), detailed RAC interconnect (`rac_char`, `rac_msg`, `rac_gesstat`, `rac_gccr/cu_srv`, `rac_gctran`), service stats, buffer pools, workarea histogram, latch/mutex/enq detail, rowcache, and parameter diff.
+- **Multi-node RAC (`Simple` 9 sheets vs `Full` 19 sheets)**:
+  - **`Simple`**: Core cluster comparison — `dbinfo`, `snapinfo`, `param`, `load`, `rac_load`, `rac_char`, `rac_msg`, `rac_gccr_srv`, `pga_hit`.
+  - **`Full`**: Adds cluster-wide `param_sga`, `rac_gc_efficiency`, `wait5`, `bufpool`, `undo`, `mttr`, `sess_cache`, `log_ckpt`, `logswitch`, and `archsize`.
+- **`*_with_ash.ini`**: Appends `[ash]` (capped at 150,000 rows) spooled to a separate `..._ASH.html` file.
 
 ## Output file naming
 
@@ -101,7 +111,7 @@ For `*_with_ash.ini` collections, convert the extra `..._ASH.html` the same way.
 AWR_<NODE|RAC>_<tag>_<host>_<inst>_<yyyymmdd_hhmiss>.html
 ```
 
-- `NODE` = Single-family ini, `RAC` = 2/3/4/7/8node ini
+- `NODE` = Single-family ini, `RAC` = 2..8node ini
 - `<tag>` = ini filename minus `AwrOne_`, compressed for brevity: `_Single` is dropped
   for the NODE family and `_with_ash` becomes `_ash`
   (e.g. `Simple_AwrOne_Single.ini` → `Simple`,
@@ -117,9 +127,10 @@ AWR_<NODE|RAC>_<tag>_<host>_<inst>_<yyyymmdd_hhmiss>.html
 
 ## Chart title variables
 
-`@@hostname@@` and `@@instance@@` in a CHART title are replaced from the input
-file name at conversion time (e.g. `Transactions (per sec) - @@hostname@@` →
-`... - rac1`).
+`@@hostname@@` and `@@instance@@` in a CHART title (used in Single-instance INIs)
+are replaced from the input file name at conversion time (e.g.
+`Transactions (per sec) - @@hostname@@` → `... - rac1`). Multi-node RAC charts
+omit `@@hostname@@` because they plot all cluster nodes together.
 
 ## INI syntax quick reference
 

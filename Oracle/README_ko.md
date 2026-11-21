@@ -64,10 +64,11 @@ sqlplus appdba/manager@<host>/<서비스> @out.sql
 python AwrONE_html_to_excel.py -i AWR_RAC_Simple_2node_rac1_PROD1_20261110_192130.html
 ```
 
-변환기는 HTML 안에 기록된 ini 이름을 읽어, 리포트 디렉터리 → 현재 디렉터리 →
-스크립트 디렉터리 순으로 해당 ini를 찾습니다. `-n <ini>`로 직접 지정할 수도 있습니다.
-차트가 포함된 `.xlsx`는 HTML 옆에 생깁니다. `*_with_ash.ini`로 수집했다면 추가로 생긴
-`..._ASH.html`도 같은 방법으로 변환하면 됩니다.
+변환기는 HTML 안에 기록된 ini 이름을 자동으로 찾아 차트가 포함된 `.xlsx`를 생성합니다.
+
+- 탐색 순서: 리포트 디렉터리 → 현재 디렉터리 → 스크립트 디렉터리 (`-n <ini>`로 직접 지정 가능).
+- 출력 경로: 기본값은 입력 HTML과 같은 위치의 `.xlsx` (`-o <out.xlsx>`로 변경 가능).
+- ASH 변환: `*_with_ash.ini`로 수집했다면 추가로 생긴 `..._ASH.html`도 같은 방법으로 변환합니다.
 
 ## 출력 예시
 
@@ -89,8 +90,18 @@ python AwrONE_html_to_excel.py -i AWR_RAC_Simple_2node_rac1_PROD1_20261110_19213
 | `Simple_AwrOne_Single_with_ash.ini` | 위 + ASH (별도 `_ASH.html`) | 〃 |
 | `Full_AwrOne_Single.ini` | 단일 인스턴스 전체 (Top SQL, Segment 등) | 〃 |
 | `Full_AwrOne_Single_with_ash.ini` | 위 + ASH | 〃 |
-| `Simple_AwrOne_{2,3,4,7,8}node.ini` | RAC 노드 비교 핵심 지표 | 1회 (클러스터 단위) |
-| `Full_AwrOne_{2,3,4,7,8}node.ini` | RAC 노드 비교 전체 | 〃 |
+| `Simple_AwrOne_{2..8}node.ini` | RAC 노드 비교 핵심 지표 (2~8노드) | 1회 (클러스터 단위) |
+| `Full_AwrOne_{2..8}node.ini` | RAC 노드 비교 전체 (2~8노드) | 〃 |
+
+### Simple vs Full 차이
+
+- **단일 인스턴스 (`Simple` 33시트 vs `Full` 102시트)**:
+  - **`Simple`**: 일상 점검·빠른 장애 1차 분석용 — DB/스냅샷 정보, 파라미터, Load Profile, RAC 부하/GC 효율, PGA/SGA/Undo/Redo/로그 스위치, 대기 이벤트(`wait5`/`wait20`/`wait_disk`/`redo_wait`/`wait_buffer`), Time Model, OS 통계, 인스턴스 활동, Latch/Enqueue/Libcache, 핵심 sysstat.
+  - **`Full`**: `Simple` 전체 **+** 7개 지표별 Top SQL(Elapsed, CPU, Buffer Gets, Disk Reads, Execs, Parses, Cluster Wait — 시계열·요약·원본), 세그먼트 통계 11종(`seg_stat_*`), 테이블스페이스/파일 I/O(`tbsstat*`, `filestat*`), RAC 상세(`rac_char`, `rac_msg`, `rac_gesstat`, `rac_gccr/cu_srv`, `rac_gctran`), 서비스 통계, 버퍼풀, Workarea, Latch/Mutex/Enq 상세, Rowcache, 파라미터 변경 이력.
+- **멀티노드 RAC (`Simple` 9시트 vs `Full` 19시트)**:
+  - **`Simple`**: 핵심 노드 비교 9종 — `dbinfo`, `snapinfo`, `param`, `load`, `rac_load`, `rac_char`, `rac_msg`, `rac_gccr_srv`, `pga_hit`.
+  - **`Full`**: 위 9종 **+** 클러스터 단위 `param_sga`, `rac_gc_efficiency`, `wait5`, `bufpool`, `undo`, `mttr`, `sess_cache`, `log_ckpt`, `logswitch`, `archsize`.
+- **`*_with_ash.ini`**: 별도 `..._ASH.html`로 스풀되는 `[ash]` 섹션(최대 150,000행 상한)을 추가합니다.
 
 ## 출력 파일명 규칙
 
@@ -98,7 +109,7 @@ python AwrONE_html_to_excel.py -i AWR_RAC_Simple_2node_rac1_PROD1_20261110_19213
 AWR_<NODE|RAC>_<ini태그>_<host>_<inst>_<yyyymmdd_hhmiss>.html
 ```
 
-- `NODE` = Single 계열 ini, `RAC` = 2/3/4/7/8node 계열 ini
+- `NODE` = Single 계열 ini, `RAC` = 2..8node 계열 ini
 - `<ini태그>` = ini 파일명에서 `AwrOne_`를 뺀 것. 길이를 줄이기 위해 NODE 계열의 `_Single`은
   생략하고 `_with_ash`는 `_ash`로 압축한다
   (예: `Simple_AwrOne_Single.ini` → `Simple`, `Full_AwrOne_Single_with_ash.ini` → `Full_ash`,
@@ -111,8 +122,10 @@ AWR_<NODE|RAC>_<ini태그>_<host>_<inst>_<yyyymmdd_hhmiss>.html
 
 ## 차트 제목 변수
 
-ini의 CHART 제목에 `@@hostname@@`, `@@instance@@`를 쓰면 변환 시 입력 파일명에서
-치환된다 (예: `Transactions (per sec) - @@hostname@@` → `... - rac1`).
+Single 계열 ini의 CHART 제목에 쓰인 `@@hostname@@`, `@@instance@@`는 변환 시
+입력 파일명에서 치환된다 (예: `Transactions (per sec) - @@hostname@@` →
+`... - rac1`). 멀티노드 RAC 차트는 클러스터 전체 노드를 함께 그리므로
+호스트명을 붙이지 않는다.
 
 ## INI 문법 요약
 

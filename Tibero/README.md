@@ -106,8 +106,18 @@ python TprONE_html_to_excel.py -i TPR_TAC_Simple_2node_tac1_prod1_20261117_20145
 | `Simple_TprOne_Single_with_ash.ini` | Same + ASH (separate `_ASH.html`) | 〃 |
 | `Full_TprOne_Single.ini` | Single-instance full set (Top SQL, segments, ...) | 〃 |
 | `Full_TprOne_Single_with_ash.ini` | Same + ASH | 〃 |
-| `Simple_TprOne_{2,3,4,7,8}node.ini` | TAC node-comparison key metrics | Once (cluster-wide) |
-| `Full_TprOne_{2,3,4,7,8}node.ini` | TAC node-comparison full set | 〃 |
+| `Simple_TprOne_{2..8}node.ini` | TAC node-comparison key metrics (2 to 8 nodes) | Once (cluster-wide) |
+| `Full_TprOne_{2..8}node.ini` | TAC node-comparison full set (2 to 8 nodes) | 〃 |
+
+### Simple vs Full
+
+- **Single-instance (`Simple` 35 sheets vs `Full` 87 sheets)**:
+  - **`Simple`**: Fast daily/incident triage — DB/snap info, parameters (`param`, `param_sga`, `param_diff`), load profile, TAC load & GC efficiency, PGA/SGA/Undo/Redo/log switches, wait events (`wait5`/`wait20`/`wait_disk`/`redo_wait`/`wait_buffer`), time model, OS stats, instance activity, latch/enq/libcache, key sysstat, and `sysmetric`.
+  - **`Full`**: Everything in `Simple` **plus** Top SQL by 7 metrics (elapsed, CPU, buffer gets, disk reads, executions, parses, I/O wait — series + summary + raw), SQL literal duplicate counts/memory, segment statistics (`seg_stat_lio/pio/bbw`), tablespace/datafile I/O (`tbsstat*`, `filestat*`), detailed TAC interconnect (`tac_char`, `tac_msg`, `tac_gesstat`, `tac_gccr/cu_srv`, `tac_gctran`), buffer pool, workarea histogram, session cache, latch/enq detail, rowcache, and archived log list.
+- **Multi-node TAC (`Simple` 9 sheets vs `Full` 23 sheets)**:
+  - **`Simple`**: Core cluster comparison — `dbinfo`, `snapinfo`, `param`, `load`, `tac_load`, `tac_char`, `tac_msg`, `tac_gccr_srv`, `pga_hit`.
+  - **`Full`**: Adds cluster-wide `param_sga`, `tac_gc_efficiency`, `wait5`, `bufpool`, `undo`, `ckpt_redo`, `sess_cache`, `redo`, `log_ckpt`, `logswitch`, `log_switch_f`, `log_switch`, `archsize`, and `arch`.
+- **`*_with_ash.ini`**: Appends `[ash]` (capped at 150,000 rows) spooled to a separate `..._ASH.html` file.
 
 ## Output file naming
 
@@ -115,7 +125,7 @@ python TprONE_html_to_excel.py -i TPR_TAC_Simple_2node_tac1_prod1_20261117_20145
 TPR_<NODE|TAC>_<tag>_<host>_<inst>_<yyyymmdd_hhmiss>.html
 ```
 
-- `NODE` = Single-family ini, `TAC` = 2/3/4/7/8node ini
+- `NODE` = Single-family ini, `TAC` = 2..8node ini
 - `<tag>` = ini filename minus `TprOne_`, compressed for brevity: `_Single` is dropped
   for the NODE family and `_with_ash` becomes `_ash`
   (e.g. `Simple_TprOne_Single.ini` → `Simple`,
@@ -129,9 +139,10 @@ TPR_<NODE|TAC>_<tag>_<host>_<inst>_<yyyymmdd_hhmiss>.html
 
 ## Chart title variables
 
-`@@hostname@@` and `@@instance@@` in a CHART title are replaced from the input
-file name at conversion time (e.g. `DBTime(s) by node - @@hostname@@` →
-`... - tac1`).
+`@@hostname@@` and `@@instance@@` in a CHART title (used in Single-instance INIs)
+are replaced from the input file name at conversion time (e.g.
+`DB Time (s) - @@hostname@@` → `... - tac1`). Multi-node TAC charts omit
+`@@hostname@@` because they plot all cluster nodes together.
 
 ## INI syntax quick reference
 

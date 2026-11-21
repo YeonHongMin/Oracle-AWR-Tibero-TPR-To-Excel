@@ -103,8 +103,18 @@ python TprONE_html_to_excel.py -i TPR_TAC_Simple_2node_tac1_prod1_20261117_20145
 | `Simple_TprOne_Single_with_ash.ini` | 위 + ASH (별도 `_ASH.html`) | 〃 |
 | `Full_TprOne_Single.ini` | 단일 인스턴스 전체 (Top SQL, Segment 등) | 〃 |
 | `Full_TprOne_Single_with_ash.ini` | 위 + ASH | 〃 |
-| `Simple_TprOne_{2,3,4,7,8}node.ini` | TAC 노드 비교 핵심 지표 | 1회 (클러스터 단위) |
-| `Full_TprOne_{2,3,4,7,8}node.ini` | TAC 노드 비교 전체 | 〃 |
+| `Simple_TprOne_{2..8}node.ini` | TAC 노드 비교 핵심 지표 (2~8노드) | 1회 (클러스터 단위) |
+| `Full_TprOne_{2..8}node.ini` | TAC 노드 비교 전체 (2~8노드) | 〃 |
+
+### Simple vs Full 차이
+
+- **단일 인스턴스 (`Simple` 35시트 vs `Full` 87시트)**:
+  - **`Simple`**: 일상 점검·빠른 장애 1차 분석용 — DB/스냅샷 정보, 파라미터(`param`/`param_sga`/`param_diff`), Load Profile, TAC 부하/GC 효율, PGA/SGA/Undo/Redo/로그 스위치, 대기 이벤트(`wait5`/`wait20`/`wait_disk`/`redo_wait`/`wait_buffer`), Time Model, OS 통계, 인스턴스 활동, Latch/Enqueue/Libcache, 핵심 sysstat, `sysmetric`.
+  - **`Full`**: `Simple` 전체 **+** 7개 지표별 Top SQL(Elapsed, CPU, Buffer Gets, Disk Reads, Execs, Parses, I/O Wait — 시계열·요약·원본), 리터럴 중복 SQL 분석, 세그먼트 통계(`seg_stat_lio/pio/bbw`), 테이블스페이스/파일 I/O(`tbsstat*`, `filestat*`), TAC 상세(`tac_char`, `tac_msg`, `tac_gesstat`, `tac_gccr/cu_srv`, `tac_gctran`), 버퍼풀, Workarea, 세션 수, Latch/Enq 상세, Rowcache, 아카이브 로그 목록.
+- **멀티노드 TAC (`Simple` 9시트 vs `Full` 23시트)**:
+  - **`Simple`**: 핵심 노드 비교 9종 — `dbinfo`, `snapinfo`, `param`, `load`, `tac_load`, `tac_char`, `tac_msg`, `tac_gccr_srv`, `pga_hit`.
+  - **`Full`**: 위 9종 **+** 클러스터 단위 `param_sga`, `tac_gc_efficiency`, `wait5`, `bufpool`, `undo`, `ckpt_redo`, `sess_cache`, `redo`, `log_ckpt`, `logswitch`, `log_switch_f`, `log_switch`, `archsize`, `arch`.
+- **`*_with_ash.ini`**: 별도 `..._ASH.html`로 스풀되는 `[ash]` 섹션(최대 150,000행 상한)을 추가합니다.
 
 ## 출력 파일명 규칙
 
@@ -112,7 +122,7 @@ python TprONE_html_to_excel.py -i TPR_TAC_Simple_2node_tac1_prod1_20261117_20145
 TPR_<NODE|TAC>_<ini태그>_<host>_<inst>_<yyyymmdd_hhmiss>.html
 ```
 
-- `NODE` = Single 계열 ini, `TAC` = 2/3/4/7/8node 계열 ini
+- `NODE` = Single 계열 ini, `TAC` = 2..8node 계열 ini
 - `<ini태그>` = ini 파일명에서 `TprOne_`를 뺀 것. 길이를 줄이기 위해 NODE 계열의 `_Single`은
   생략하고 `_with_ash`는 `_ash`로 압축한다
   (예: `Simple_TprOne_Single.ini` → `Simple`, `Full_TprOne_Single_with_ash.ini` → `Full_ash`,
@@ -124,8 +134,9 @@ TPR_<NODE|TAC>_<ini태그>_<host>_<inst>_<yyyymmdd_hhmiss>.html
 
 ## 차트 제목 변수
 
-ini의 CHART 제목에 `@@hostname@@`, `@@instance@@`를 쓰면 변환 시 입력 파일명에서
-치환된다 (예: `DBTime(s) by node - @@hostname@@` → `... - tac1`).
+Single 계열 ini의 CHART 제목에 쓰인 `@@hostname@@`, `@@instance@@`는 변환 시
+입력 파일명에서 치환된다 (예: `DB Time (s) - @@hostname@@` → `... - tac1`).
+멀티노드 TAC 차트는 클러스터 전체 노드를 함께 그리므로 호스트명을 붙이지 않는다.
 
 ## INI 문법 요약
 
