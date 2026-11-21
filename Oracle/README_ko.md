@@ -93,15 +93,124 @@ python AwrONE_html_to_excel.py -i AWR_RAC_Simple_2node_rac1_PROD1_20261110_19213
 | `Simple_AwrOne_{2..8}node.ini` | RAC 노드 비교 핵심 지표 (2~8노드) | 1회 (클러스터 단위) |
 | `Full_AwrOne_{2..8}node.ini` | RAC 노드 비교 전체 (2~8노드) | 〃 |
 
-### Simple vs Full 차이
+### Simple vs Full — 전체 추출 대상 `[섹션]` 상세 목록
 
-- **단일 인스턴스 (`Simple` 33시트 vs `Full` 102시트)**:
-  - **`Simple`**: 일상 점검·빠른 장애 1차 분석용 — DB/스냅샷 정보, 파라미터, Load Profile, RAC 부하/GC 효율, PGA/SGA/Undo/Redo/로그 스위치, 대기 이벤트(`wait5`/`wait20`/`wait_disk`/`redo_wait`/`wait_buffer`), Time Model, OS 통계, 인스턴스 활동, Latch/Enqueue/Libcache, 핵심 sysstat.
-  - **`Full`**: `Simple` 전체 **+** 7개 지표별 Top SQL(Elapsed, CPU, Buffer Gets, Disk Reads, Execs, Parses, Cluster Wait — 시계열·요약·원본), 세그먼트 통계 11종(`seg_stat_*`), 테이블스페이스/파일 I/O(`tbsstat*`, `filestat*`), RAC 상세(`rac_char`, `rac_msg`, `rac_gesstat`, `rac_gccr/cu_srv`, `rac_gctran`), 서비스 통계, 버퍼풀, Workarea, Latch/Mutex/Enq 상세, Rowcache, 파라미터 변경 이력.
-- **멀티노드 RAC (`Simple` 9시트 vs `Full` 19시트)**:
-  - **`Simple`**: 핵심 노드 비교 9종 — `dbinfo`, `snapinfo`, `param`, `load`, `rac_load`, `rac_char`, `rac_msg`, `rac_gccr_srv`, `pga_hit`.
-  - **`Full`**: 위 9종 **+** 클러스터 단위 `param_sga`, `rac_gc_efficiency`, `wait5`, `bufpool`, `undo`, `mttr`, `sess_cache`, `log_ckpt`, `logswitch`, `archsize`.
-- **`*_with_ash.ini`**: 별도 `..._ASH.html`로 스풀되는 `[ash]` 섹션(최대 150,000행 상한)을 추가합니다.
+#### 1. 단일 인스턴스 INI (`Simple_AwrOne_Single.ini` vs `Full_AwrOne_Single.ini`)
+
+- **`Simple` (33개 시트 — `Simple`과 `Full` 공통 포함)**:
+  - **환경 및 파라미터**:
+    - `[dbinfo]` — 인스턴스/호스트/DB명, DBID, 버전, RAC 여부, 수집 스냅샷 시작/종료 시각
+    - `[snapinfo]` — 스냅샷 ID 목록, 스냅 시각, 구간 길이(초), 인스턴스 기동 시각
+    - `[param]` — DB 초기화 파라미터 목록
+    - `[param_sga]` — SGA/PGA 메모리 관련 핵심 파라미터(`sga_target`, `db_cache_size`, `shared_pool_size` 등)
+  - **부하 프로필 및 RAC/시스템 지표**:
+    - `[load]` — Load Profile 시계열(DB Time, DB CPU, Redo, 논리/물리 읽기·쓰기, MB/s, User Calls, Parse/Hard Parse, Sort, Logon, Exec, Tx, 주요 Hit율)
+    - `[rac_load]` — Global Cache 블록 수신/전송, 인터커넥트 트래픽, CR/Current 블록 생성·전송 시간
+    - `[rac_gc_efficiency]` — 버퍼 접근 효율(`local %`, `remote %`, `disk %`)
+    - `[time_model]` — Time Model 통계(`DB time`, `DB CPU`, SQL 실행/파싱/하드파싱, PL/SQL, 접속 관리 시간)
+    - `[osstat]` — OS CPU 사용률(`busy`, `user`, `sys`, `iowait`, `idle`), Load Average, CPU/코어/소켓 수, 물리 메모리
+    - `[inst_activity]` — 핵심 인스턴스 활동 지표(Commit, Rollback, Execute, Parse, Redo Entries, Table Scan 등)
+    - `[sysstat_key]` — 주요 내부 카운터(인덱스 분할, 블록 클린아웃, 버퍼 스캔, DBWR 체크포인트 요청 등)
+    - `[xd_sysstat]` — Exadata Smart Scan / 스토리지 셀 오프로드 통계
+  - **대기 이벤트 및 서비스**:
+    - `[wait5]` — 스냅샷별 Top 5 대기 이벤트 시계열(대기 횟수, 총 대기시간, 평균 대기 ms, `% DB time`)
+    - `[wait20]` — 스냅샷별 Top 20 대기 이벤트 시계열(대기 횟수, 총 대기시간, 평균 대기 ms, `% DB time`)
+    - `[wait15_raw]` — 스냅샷별 Top 15 대기 이벤트 원본 목록(Wait Class, 대기 횟수, 타임아웃, 대기시간, 평균 ms)
+    - `[wait_disk]` — 디스크 I/O 대기 이벤트 상세(`db file sequential read`, `scattered read`, `direct path read/write` 등)
+    - `[redo_wait]` — Redo/커밋 관련 대기 상세(`log file sync`, `log file parallel write`, `log file switch*`, `log buffer space`)
+    - `[wait_buffer]` — 버퍼 경합 대기 상세(`buffer busy waits`, `read by other session`, `free buffer waits`, `gc buffer busy*`, `write complete waits`)
+    - `[waitstat]` — 블록 클래스별 버퍼 대기 통계(`data block`, `undo header`, `undo block`, `segment header`)
+    - `[service_wait]` — 서비스별 DB Time, CPU, 물리/논리 읽기 및 대기 클래스별 시간
+  - **메모리, Undo, Redo 및 동시성**:
+    - `[sga]` — SGA 영역별 크기 추이(Buffer Cache, Shared Pool, Large/Java/Streams Pool, Free 메모리)
+    - `[pga]` — PGA 메모리 할당량/사용량/최대값 및 Cache Hit %
+    - `[pga_hit]` — SQL Workarea 실행 비율(`optimal %`, `onepass %`, `multipass %`)
+    - `[libcache]` — 네임스페이스별 Library Cache 활동(Gets, Pins, Pin Hit %, Reloads, Invalidations)
+    - `[latch]` — 대기시간 기준 Top 5 Latch 시계열(대기시간, Miss Ratio %, Misses)
+    - `[enq]` — 총 대기시간 기준 Top 5 Enqueue 락 대기 시계열
+    - `[undo]` — Undo 사용량(Undo 블록, 트랜잭션 수, 최대 쿼리 길이, `ORA-01555` 에러, 공간 부족 에러)
+    - `[mttr]` — 인스턴스 복구 MTTR 목표치 대비 추정 복구 시간 및 더티 버퍼 수
+    - `[resource]` — `DBA_HIST_RESOURCE_LIMIT` 자원 사용량(`processes`, `sessions`, `enqueue_locks` 등)
+    - `[log_ckpt]` — 스레드별 Redo 로그 스위치 간격 요약(최소/최대/평균 분)
+    - `[logswitch]` — 스레드별(`Thread#1..4`) 시간대별 Redo 로그 스위치 횟수
+    - `[archsize]` — 스레드별 일자별 아카이브 로그 생성 개수 및 용량(MB)
+    - `[sqlstat]` — 수집된 SQL 전체의 스냅샷별 요약(SQL 수, 1회성 SQL 수, 실행 수, Buffer Gets, Disk Reads, CPU/Elapsed 시간)
+
+- **`Full` (`Simple` 33개에 아래 69개 상세 시트 추가 = 총 102개 시트)**:
+  - **RAC 인터커넥트 심층 분석**:
+    - `[rac_char]` — Global Enqueue / Global Cache 서비스 응답시간 및 메시지 처리 지연
+    - `[rac_msg]` — 인터커넥트 메시지 큐 대기·전송 지연 및 티켓 통계
+    - `[rac_gesstat]` — 주요 DLM/GES 통계(`DBA_HIST_DLM_MISC`: 직·간접 메시지 전송/수신, 흐름 제어, 큐 시간)
+    - `[rac_gccr_srv]` — Global Cache CR 블록 서버 통계(빌드, 플러시, 전송 시간 및 블록 수)
+    - `[rac_gccu_srv]` — Global Cache Current 블록 서버 통계(Pin, 플러시, 전송 시간 및 블록 수)
+    - `[rac_gctran]` / `[rac_gctran_raw]` — 블록 클래스별 Global Cache 블록 전송·변환 시계열 및 원본
+  - **7대 지표별 Top 10 SQL (지표당 3개 시트 = 21개 시트 + `[sql_stat]`)**:
+    - `[sql_ela]` / `[sql_ela2]` / `[sql_ela_raw]` — **Elapsed Time(수행시간)** Top 10 SQL (시계열 차트 / SQL 텍스트 포함 요약표 / 스냅샷별 원본)
+    - `[sql_cpu]` / `[sql_cpu2]` / `[sql_cpu_raw]` — **CPU Time** Top 10 SQL
+    - `[sql_get]` / `[sql_get2]` / `[sql_get_raw]` — **Buffer Gets(논리적 읽기)** Top 10 SQL
+    - `[sql_read]` / `[sql_read2]` / `[sql_read_raw]` — **Disk Reads(물리적 읽기)** Top 10 SQL
+    - `[sql_exe]` / `[sql_exe2]` / `[sql_exe_raw]` — **Executions(실행 횟수)** Top 10 SQL
+    - `[sql_parse]` / `[sql_parse2]` / `[sql_parse_raw]` — **Parse Calls(파싱 횟수)** Top 10 SQL
+    - `[sql_clwait]` / `[sql_clwait2]` / `[sql_clwait_raw]` — **Cluster Wait Time(클러스터 대기)** Top 10 SQL
+    - `[sql_stat]` — 스냅샷별 SQL 실행·플랜 상세 롤업
+  - **11대 지표별 Top 5 세그먼트 통계**:
+    - `[seg_stat_lio]` — 논리적 읽기(Logical Reads) Top 5 세그먼트
+    - `[seg_stat_pio]` — 물리적 읽기(Physical Reads) Top 5 세그먼트
+    - `[seg_stat_bbw]` — Buffer Busy Waits Top 5 세그먼트
+    - `[seg_stat_rlw]` — Row Lock Waits Top 5 세그먼트
+    - `[seg_stat_itlw]` — ITL Waits Top 5 세그먼트
+    - `[seg_stat_gccrsv]` / `[seg_stat_gccusv]` — GC CR / Current 블록 전송 Top 5 세그먼트
+    - `[seg_stat_gccrrc]` / `[seg_stat_gccurc]` — GC CR / Current 블록 수신 Top 5 세그먼트
+    - `[seg_stat_gcbb]` — GC Buffer Busy 대기 Top 5 세그먼트
+    - `[seg_stat_spused]` — 공간 사용량 증가(Space Used) Top 5 세그먼트
+  - **테이블스페이스 및 데이터파일 I/O**:
+    - `[tbsstat_total]` / `[filestat_total]` — 스냅샷별 전체 테이블스페이스·데이터파일 I/O 통계 원본
+    - `[tbsstat]` / `[filestat]` — 물리적 읽기 상위 5개 테이블스페이스·데이터파일 시계열
+    - `[filestat_avg_blks_per_rd]` — 1회 읽기당 평균 블록 수 상위 5개 데이터파일 시계열
+    - `[filestat_avg_time_per_rd]` / `[filestat_avg_time_per_rd_topio]` — 평균 읽기 응답시간(ms) 상위 5개 데이터파일 시계열 및 원본
+    - `[filestat_avg_bwt]` / `[filestat_avg_bwt_topio]` — 데이터파일 버퍼 대기시간 시계열 및 원본
+  - **서비스, 메모리, 락 및 파라미터 상세**:
+    - `[service_stat]` / `[service_stat_dbtime]` / `[service_stat_dbcpu]` / `[service_stat_lio]` / `[service_stat_pio]` — 서비스별 종합 통계 및 DB Time/DB CPU/논리 읽기/물리 읽기 시계열
+    - `[wait5_raw]` — 스냅샷별 Top 5 대기 이벤트 원본 목록
+    - `[workarea]` / `[workarea_raw]` — SQL Workarea 메모리 히스토그램 요약 및 원본
+    - `[bufpool]` / `[bufpool_other]` — 기본(DEFAULT/KEEP/RECYCLE) 및 비표준 블록 크기 버퍼풀 통계
+    - `[enq_av]` — 평균 대기시간 기준 Top 5 Enqueue 락 시계열
+    - `[undo_sql]` — Undo 사용량 및 최장 수행 쿼리 SQL ID 매핑
+    - `[latch_sleep]` / `[latch_miss]` / `[mutex_sleep]` — Sleep 횟수/Miss 비율 상위 5개 Latch 및 Library Cache Mutex Sleep
+    - `[rowcache]` — 활성 Dictionary Cache(`DBA_HIST_ROWCACHE_SUMMARY`) Gets/Misses/Scans/DLM 통계
+    - `[redo]` — Redo 로그 그룹·멤버 구성(`v$log` / `v$logfile`)
+    - `[sess_cache]` — 세션 수 및 세션 커서 캐시 적중률 추이
+    - `[param_diff]` — 스냅샷 구간 내 변경된 초기화 파라미터 이력
+
+- **`*_with_ash.ini` (별도 `..._ASH.html`로 스풀되는 1개 시트 추가)**:
+  - `[ash]` — 수집 구간 내 Active Session History(`DBA_HIST_ACTIVE_SESS_HISTORY`) 원본 샘플 (최대 150,000행 상한)
+
+---
+
+#### 2. 멀티노드 RAC INI (`Simple_AwrOne_{2..8}node.ini` vs `Full_AwrOne_{2..8}node.ini`)
+
+- **`Simple` (9개 시트 — 클러스터 전체 노드 병렬 비교)**:
+  - `[dbinfo]` — 클러스터 DB 기본 정보 및 활성 인스턴스
+  - `[snapinfo]` — 인스턴스별 수집 스냅샷 구간 요약
+  - `[param]` — 전 노드(`#1`..`#N`) 초기화 파라미터 병렬 비교표
+  - `[load]` — 노드별 Load Profile 비교(DB Time, DB CPU, Redo, 논리/물리 읽기, User Calls, Execs, Parses, Tx 등)
+  - `[rac_load]` — 노드별 Global Cache 블록 수신/전송, 인터커넥트 트래픽 및 물리 I/O 비교
+  - `[rac_char]` — 노드별 Global Cache / Enqueue 처리 지연 비교
+  - `[rac_msg]` — 노드별 인터커넥트 메시지 큐·전송 지연 비교
+  - `[rac_gccr_srv]` — 노드별 Global Cache CR/Current 블록 서버 처리량 및 지연 비교
+  - `[pga_hit]` — 노드별 PGA Cache Hit % 및 Workarea Optimal 실행 비율 비교
+
+- **`Full` (`Simple` 9개에 아래 10개 클러스터 시트 추가 = 총 19개 시트)**:
+  - `[param_sga]` — 전 노드 SGA/메모리 핵심 파라미터 병렬 비교표
+  - `[rac_gc_efficiency]` — 노드별 버퍼 접근 효율(`local %`, `remote %`, `disk %`) 비교
+  - `[wait5]` — 노드별 DB Time, DB CPU, 대기시간 비교
+  - `[bufpool]` — 노드별 버퍼풀 적중률, Free Buffer 대기, Buffer Busy 대기 비교
+  - `[undo]` — 노드별 Undo 블록, 트랜잭션 수, 최대 쿼리 길이 비교
+  - `[mttr]` — 노드별 MTTR 목표치 및 추정 복구 시간 비교
+  - `[sess_cache]` — 노드별 세션 수 및 세션 커서 캐시 비교
+  - `[log_ckpt]` — 스레드별 Redo 로그 스위치 간격(최소/최대/평균 분) 요약
+  - `[logswitch]` — 전 스레드 시간대별 Redo 로그 스위치 횟수
+  - `[archsize]` — 전 스레드 일자별 아카이브 로그 생성 개수 및 용량(MB)
 
 ## 출력 파일명 규칙
 

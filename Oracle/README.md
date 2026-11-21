@@ -95,15 +95,124 @@ For `*_with_ash.ini` collections, convert the extra `..._ASH.html` the same way.
 | `Simple_AwrOne_{2..8}node.ini` | RAC node-comparison key metrics (2 to 8 nodes) | Once (cluster-wide) |
 | `Full_AwrOne_{2..8}node.ini` | RAC node-comparison full set (2 to 8 nodes) | 〃 |
 
-### Simple vs Full
+### Simple vs Full — Collected `[section]` Reference
 
-- **Single-instance (`Simple` 33 sheets vs `Full` 102 sheets)**:
-  - **`Simple`**: Fast daily/incident triage — DB/snap info, parameters, load profile, RAC load & GC efficiency, PGA/SGA/Undo/Redo/log switches, wait events (`wait5`/`wait20`/`wait_disk`/`redo_wait`/`wait_buffer`), time model, OS stats, instance activity, latch/enq/libcache, and key sysstat.
-  - **`Full`**: Everything in `Simple` **plus** Top SQL by 7 metrics (elapsed, CPU, buffer gets, disk reads, executions, parses, cluster wait — series + summary + raw), 11 segment statistics (`seg_stat_*`), tablespace/datafile I/O (`tbsstat*`, `filestat*`), detailed RAC interconnect (`rac_char`, `rac_msg`, `rac_gesstat`, `rac_gccr/cu_srv`, `rac_gctran`), service stats, buffer pools, workarea histogram, latch/mutex/enq detail, rowcache, and parameter diff.
-- **Multi-node RAC (`Simple` 9 sheets vs `Full` 19 sheets)**:
-  - **`Simple`**: Core cluster comparison — `dbinfo`, `snapinfo`, `param`, `load`, `rac_load`, `rac_char`, `rac_msg`, `rac_gccr_srv`, `pga_hit`.
-  - **`Full`**: Adds cluster-wide `param_sga`, `rac_gc_efficiency`, `wait5`, `bufpool`, `undo`, `mttr`, `sess_cache`, `log_ckpt`, `logswitch`, and `archsize`.
-- **`*_with_ash.ini`**: Appends `[ash]` (capped at 150,000 rows) spooled to a separate `..._ASH.html` file.
+#### 1. Single-Instance INIs (`Simple_AwrOne_Single.ini` vs `Full_AwrOne_Single.ini`)
+
+- **`Simple` (33 sheets — included in both `Simple` and `Full`)**:
+  - **Environment & Parameters**:
+    - `[dbinfo]` — Instance, host, database name, DBID, version, RAC status, snapshot window
+    - `[snapinfo]` — AWR snapshot IDs, timestamps, interval duration, instance startup time
+    - `[param]` — Non-default / all database initialization parameters
+    - `[param_sga]` — Memory and SGA/PGA sizing parameters (`sga_target`, `db_cache_size`, `shared_pool_size`, ...)
+  - **Workload & RAC Profile**:
+    - `[load]` — Load Profile time series (DB Time, DB CPU, redo, logical/physical reads & writes, MB/s, user calls, parses, hard parses, sorts, logons, executes, transactions, hit ratios)
+    - `[rac_load]` — Global Cache blocks received/served, interconnect traffic, CR/current build & send times
+    - `[rac_gc_efficiency]` — Buffer access efficiency breakdown (`local %`, `remote %`, `disk %`)
+    - `[time_model]` — Time Model statistics (`DB time`, `DB CPU`, SQL execute, parse, hard parse, PL/SQL, connection management)
+    - `[osstat]` — OS CPU utilization (`busy`, `user`, `sys`, `iowait`, `idle`), load average, CPU/core/socket counts, physical memory
+    - `[inst_activity]` — Key instance activity counters (`user commits`, `user rollbacks`, `execute count`, `parse count`, `redo entries`, `table scans`, ...)
+    - `[sysstat_key]` — Key `DBA_HIST_SYSSTAT` internal counters (index splits, block cleanouts, buffer scans, DBWR checkpoints, redo entries)
+    - `[xd_sysstat]` — Exadata Smart Scan / storage cell offload statistics
+  - **Wait Events & Services**:
+    - `[wait5]` — Top 5 Foreground Timed Events per snapshot (waits, time, avg wait ms, `% DB time`)
+    - `[wait20]` — Top 20 Foreground Timed Events per snapshot (waits, time, avg wait ms, `% DB time`)
+    - `[wait15_raw]` — Raw Top 15 wait events per snapshot (`wait_class`, waits, timeouts, time waited, avg wait)
+    - `[wait_disk]` — Disk I/O wait breakdown (`db file sequential read`, `scattered read`, `direct path read/write`, ...)
+    - `[redo_wait]` — Redo & commit wait breakdown (`log file sync`, `log file parallel write`, `log file switch*`, `log buffer space`)
+    - `[wait_buffer]` — Buffer contention wait breakdown (`buffer busy waits`, `read by other session`, `free buffer waits`, `gc buffer busy*`, `write complete waits`)
+    - `[waitstat]` — Buffer wait statistics by block class (`data block`, `undo header`, `undo block`, `segment header`)
+    - `[service_wait]` — Per-service DB time, CPU time, physical/logical reads, and wait class breakdown
+  - **Memory, Undo, Redo & Concurrency**:
+    - `[sga]` — SGA component sizes over time (buffer cache, shared pool, large pool, java pool, streams pool, free memory)
+    - `[pga]` — PGA memory advisory/usage (`total PGA allocated`, `total PGA inuse`, `maximum PGA allocated`, cache hit %)
+    - `[pga_hit]` — SQL workarea execution breakdown (`optimal %`, `onepass %`, `multipass %`)
+    - `[libcache]` — Library cache activity by namespace (gets, pins, pin hit %, reloads, invalidations)
+    - `[latch]` — Top 5 latches by wait time (wait time, miss ratio %, misses)
+    - `[enq]` — Top 5 enqueue lock waits by total wait time
+    - `[undo]` — Undo segment usage (undo blocks, transaction count, max query length, `ORA-01555` snapshot too old, space errors)
+    - `[mttr]` — Instance recovery MTTR target vs estimated recovery time and dirty buffer counts
+    - `[resource]` — `DBA_HIST_RESOURCE_LIMIT` utilization (`processes`, `sessions`, `enqueue_locks`, `max_rollback_segments`)
+    - `[log_ckpt]` — Redo log switch interval statistics (min/max/avg switch gap in minutes by thread)
+    - `[logswitch]` — Hourly redo log switch count matrix by thread (`Thread#1..4`)
+    - `[archsize]` — Daily archived redo log count and size (MB) by thread
+    - `[sqlstat]` — Per-snapshot SQL summary across captured statements (SQL count, single-use SQL, executions, buffer gets, disk reads, CPU/elapsed time)
+
+- **`Full` (adds 69 detail sheets on top of `Simple` = 102 sheets total)**:
+  - **RAC Interconnect Deep-Dive**:
+    - `[rac_char]` — Global Enqueue / Global Cache service latency and message timings
+    - `[rac_msg]` — Interconnect message queue/send latency and ticket statistics
+    - `[rac_gesstat]` — Key DLM/GES statistics (`DBA_HIST_DLM_MISC`: messages sent/received, flow control, queue time)
+    - `[rac_gccr_srv]` — Global Cache CR block server statistics (build, flush, send times and counts)
+    - `[rac_gccu_srv]` — Global Cache Current block server statistics (pin, flush, send times and counts)
+    - `[rac_gctran]` / `[rac_gctran_raw]` — Global Cache block transfer & convert summary and raw per-class breakdown
+  - **Top SQL by 7 Metrics (3 sheets per metric = 21 sheets + `[sql_stat]`)**:
+    - `[sql_ela]` / `[sql_ela2]` / `[sql_ela_raw]` — Top 10 SQL by **Elapsed Time** (time-series chart, summary with SQL text, per-snapshot raw ranking)
+    - `[sql_cpu]` / `[sql_cpu2]` / `[sql_cpu_raw]` — Top 10 SQL by **CPU Time**
+    - `[sql_get]` / `[sql_get2]` / `[sql_get_raw]` — Top 10 SQL by **Buffer Gets (Logical I/O)**
+    - `[sql_read]` / `[sql_read2]` / `[sql_read_raw]` — Top 10 SQL by **Disk Reads (Physical I/O)**
+    - `[sql_exe]` / `[sql_exe2]` / `[sql_exe_raw]` — Top 10 SQL by **Executions**
+    - `[sql_parse]` / `[sql_parse2]` / `[sql_parse_raw]` — Top 10 SQL by **Parse Calls**
+    - `[sql_clwait]` / `[sql_clwait2]` / `[sql_clwait_raw]` — Top 10 SQL by **Cluster Wait Time**
+    - `[sql_stat]` — Extended per-snapshot SQL execution and bind/plan rollup
+  - **Top Segments by 11 Metrics**:
+    - `[seg_stat_lio]` — Top 5 segments by Logical Reads
+    - `[seg_stat_pio]` — Top 5 segments by Physical Reads
+    - `[seg_stat_bbw]` — Top 5 segments by Buffer Busy Waits
+    - `[seg_stat_rlw]` — Top 5 segments by Row Lock Waits
+    - `[seg_stat_itlw]` — Top 5 segments by ITL Waits
+    - `[seg_stat_gccrsv]` / `[seg_stat_gccusv]` — Top 5 segments by GC CR / Current blocks served
+    - `[seg_stat_gccrrc]` / `[seg_stat_gccurc]` — Top 5 segments by GC CR / Current blocks received
+    - `[seg_stat_gcbb]` — Top 5 segments by GC Buffer Busy waits
+    - `[seg_stat_spused]` — Top 5 segments by Space Used delta
+  - **Tablespace & Datafile I/O**:
+    - `[tbsstat_total]` / `[filestat_total]` — Full per-snapshot tablespace and datafile I/O statistics table
+    - `[tbsstat]` / `[filestat]` — Top 5 tablespaces and datafiles by physical reads time series
+    - `[filestat_avg_blks_per_rd]` — Top 5 datafiles by average blocks per read
+    - `[filestat_avg_time_per_rd]` / `[filestat_avg_time_per_rd_topio]` — Top 5 datafiles by average read latency (ms) and raw list
+    - `[filestat_avg_bwt]` / `[filestat_avg_bwt_topio]` — Top 5 datafiles by buffer wait time and raw list
+  - **Service, Memory, Lock & Parameter Details**:
+    - `[service_stat]` / `[service_stat_dbtime]` / `[service_stat_dbcpu]` / `[service_stat_lio]` / `[service_stat_pio]` — Per-service time series by DB Time, DB CPU, Logical Reads, Physical Reads
+    - `[wait5_raw]` — Top 5 wait events raw table per snapshot
+    - `[workarea]` / `[workarea_raw]` — SQL workarea memory histogram and raw breakdown
+    - `[bufpool]` / `[bufpool_other]` — Default/Keep/Recycle and non-standard block size buffer pool statistics
+    - `[enq_av]` — Top 5 enqueue locks by average wait time
+    - `[undo_sql]` — Undo usage correlated with max-query SQL IDs
+    - `[latch_sleep]` / `[latch_miss]` / `[mutex_sleep]` — Top 5 latches by sleeps/miss ratio and library cache mutex sleeps
+    - `[rowcache]` — Active Dictionary Cache (`DBA_HIST_ROWCACHE_SUMMARY`) gets, misses, scans, and DLM activity
+    - `[redo]` — Redo log group configuration (`v$log` / `v$logfile`)
+    - `[sess_cache]` — Session count and session cursor cache hit statistics
+    - `[param_diff]` — History of initialization parameters modified across snapshots
+
+- **`*_with_ash.ini` (appends 1 sheet spooled to `..._ASH.html`)**:
+  - `[ash]` — Active Session History (`DBA_HIST_ACTIVE_SESS_HISTORY`) raw samples within the window (capped at 150,000 rows)
+
+---
+
+#### 2. Multi-Node RAC INIs (`Simple_AwrOne_{2..8}node.ini` vs `Full_AwrOne_{2..8}node.ini`)
+
+- **`Simple` (9 sheets — cluster-wide node-by-node comparison)**:
+  - `[dbinfo]` — Cluster database info and active instances
+  - `[snapinfo]` — Per-instance snapshot range summary
+  - `[param]` — Side-by-side initialization parameter comparison across nodes (`#1`..`#N`)
+  - `[load]` — Per-node Load Profile comparison (DB Time, DB CPU, Redo, Logical/Physical Reads, User Calls, Executions, Parses, Transactions, etc.)
+  - `[rac_load]` — Per-node Global Cache blocks received/served, interconnect traffic, and physical I/O
+  - `[rac_char]` — Per-node Global Cache / Enqueue latency comparison
+  - `[rac_msg]` — Per-node interconnect message queue & send latency comparison
+  - `[rac_gccr_srv]` — Per-node Global Cache CR/Current block server throughput and time comparison
+  - `[pga_hit]` — Per-node PGA cache hit % and workarea optimal execution % comparison
+
+- **`Full` (adds 10 cluster sheets on top of `Simple` = 19 sheets total)**:
+  - `[param_sga]` — Side-by-side SGA/memory parameter comparison across nodes
+  - `[rac_gc_efficiency]` — Per-node buffer access efficiency (`local %`, `remote %`, `disk %`)
+  - `[wait5]` — Per-node DB Time, DB CPU, and wait time comparison
+  - `[bufpool]` — Per-node buffer pool hit ratio, free buffer waits, and buffer busy waits
+  - `[undo]` — Per-node undo blocks, transaction counts, and max query length
+  - `[mttr]` — Per-node MTTR target and estimated recovery time
+  - `[sess_cache]` — Per-node active/total session count and cursor cache statistics
+  - `[log_ckpt]` — Per-thread redo log switch interval summary (min/max/avg minutes)
+  - `[logswitch]` — Hourly redo log switch count matrix across all threads
+  - `[archsize]` — Daily archived redo log count and size (MB) across all threads
 
 ## Output file naming
 
