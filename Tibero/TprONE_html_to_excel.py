@@ -137,7 +137,7 @@ class TPRHtmlToExcelConverter:
         Parse command-line arguments and configure input/output paths and chart options.
 
         CLI Options:
-            -i, --input: Input AWR HTML file path (required).
+            -i, --input: Input TPR HTML file path (required).
             -o, --output: Output Excel file path (optional; defaults to <input>.xlsx).
             -n, --ini: INI configuration file path (optional; auto-extracted from HTML if omitted).
             --debug: Enable debug logging.
@@ -1202,8 +1202,10 @@ Examples:
             try:
                 self._create_and_insert_chart(chart_config, num_rows, idx)
             except Exception as e:
-                if self.debug:
-                    print(f"  Warning: Failed to create chart {idx}: {e}")
+                print(
+                    f"  Warning: Failed to create chart {idx} on [{self.current_sheet_name}]: {e}",
+                    file=sys.stderr,
+                )
     
     def _create_and_insert_chart(
         self,
@@ -1431,7 +1433,7 @@ Examples:
             SystemExit: On missing input files or unrecoverable conversion errors.
         """
         print("=" * 70)
-        print("AWR HTML to Excel Converter")
+        print("TPR HTML to Excel Converter")
         print("=" * 70)
         
         # 1. Parse command-line arguments

@@ -23,6 +23,8 @@ INI ──TprONE_ini_to_sql.py──▶ .sql ──tbsql (spool HTML)──▶ .
 python TprONE_ini_to_sql.py -i Simple_TprOne_2node.ini -o out.sql
 ```
 
+- Report kind (`NODE` vs `TAC`) is inferred from the INI filename (`*Single*` → `NODE`, otherwise `TAC`) and cross-checked against the INI body; pass `-k {NODE,TAC}` to override explicitly.
+
 ### 2. Set the collection time window (required)
 
 Open the generated `out.sql` and edit the two lines near the top:
@@ -35,14 +37,16 @@ exec :snapdate_to:=202611172359
 - Format: `YYYYMMDDHH24MI` (year, month, day, hour, minute — local DB time).
 - The shipped defaults (`202601010000`–`202601150000`) are placeholders;
   always set the range you actually want (e.g. an incident window or the last day).
-- Snapshots within the window are collected. Since `SYS._TPR_*` tables already
-  store per-interval deltas, the first snapshot inside the window is included
-  directly (no baseline `snap_id - 1` subtraction). If no snapshots match,
-  the script stops with `ERROR-20001: No TPR ... snapshots found ...`.
+- Snapshots whose interval falls inside the window (`begin_interval_time >= :snapdate_from`
+  and `end_interval_time <= :snapdate_to`) are collected.
+- Since `SYS._TPR_*` tables already store per-interval deltas, the first snapshot
+  inside the window is included directly (no baseline `snap_id - 1` subtraction).
+  If no snapshots match, the script stops with `ERROR-20001: No TPR ... snapshots found ...`.
 - `:inst_no` and `:dbid` are auto-detected from the connection — you only edit
-  the two dates. Note that Tibero `THREAD#` / `INSTANCE_NUMBER` is **0-based**
-  (`0..N-1`), so TAC ini files preset `:inst_no1:=0` … `:inst_no8:=7`; adjust
-  them if your instances are numbered differently.
+  the two dates.
+- Tibero `THREAD#` / `INSTANCE_NUMBER` is **0-based** (`0..N-1`), so TAC ini files
+  preset `:inst_no1:=0` … `:inst_no8:=7`; adjust them if your instances are
+  numbered differently.
 
 ### 3. Collect with `tbsql`
 
@@ -50,18 +54,18 @@ Run anywhere that has `tbsql` and network access to the DB — there is no fixed
 directory; the HTML report is written to the current directory.
 
 - Single-family ini: run **once per node**, connecting to each instance.
-- TAC-family ini: run **once** against any instance — the queries already cover
+- TAC (Tibero Active Cluster) ini: run **once** against any instance — the queries already cover
   the whole cluster grouped by global snapshot ID (`snap_gid`). (A `4node` or
   `8node` ini on a 2-node cluster still works; missing nodes show as `inst#<N>`
   with zero-filled series.)
 
 ```bash
 # Single family — once per node
-tbsql -s sys/<password>@<node1-conn> @out.sql
-tbsql -s sys/<password>@<node2-conn> @out.sql
+tbsql sys/<password>@<node1-conn> @out.sql
+tbsql sys/<password>@<node2-conn> @out.sql
 
 # TAC family — once, any node
-tbsql -s sys/<password>@<any-node-conn> @out.sql
+tbsql sys/<password>@<any-node-conn> @out.sql
 ```
 
 ### 4. Convert to Excel
@@ -70,23 +74,26 @@ tbsql -s sys/<password>@<any-node-conn> @out.sql
 python TprONE_html_to_excel.py -i TPR_TAC_Simple_2node_tac1_prod1_20261117_201453.html
 ```
 
-The converter reads the source ini name recorded inside the HTML and searches
-the report's directory, the working directory, and the script directory; use
-`-n <ini>` to override. The `.xlsx` (with charts) is written next to the HTML.
-For `*_with_ash.ini` collections, convert the extra `..._ASH.html` the same way.
+- The converter reads the source ini name recorded inside the HTML and searches
+  the report's directory, the working directory, and the script directory; use
+  `-n <ini>` to override.
+- The `.xlsx` (with charts) is written next to the HTML (or to `-o <out.xlsx>`).
+- Optional chart flags: `--x-rotation DEG` (`-90..90`, default `-90`) and
+  `--x-format FMT` (default `'mm-dd hh:mm'`; pass `""` to keep the INI's format).
+- For `*_with_ash.ini` collections, convert the extra `..._ASH.html` the same way.
 
 ## Sample output
 
-| `load` — DBTime(s) per node | `rac_load` — Global Cache blocks received |
+| `load` — DBTime(s) per node | `tac_load` — Global Cache blocks received |
 |---|---|
-| ![load chart](docs/images/load_1.png) | ![rac_load chart](docs/images/rac_load_1.png) |
+| ![load chart](docs/images/load_1.png) | ![tac_load chart](docs/images/tac_load_1.png) |
 
 ## Requirements
 
 - Python 3.x standard library + `xlsxwriter`
 - Tibero **7 or later**; `tbsql` client
-- Read access to `SYS._TPR_*`, `SYS._VT_*`, and `DBA_HIST_*` (e.g. `SYS` or an
-  account granted SELECT on the TPR repository tables)
+- Read access to `SYS._TPR_*`, `SYS._VT_*`, `V$*`, and `GV$*` views (e.g. `SYS`
+  or an account granted SELECT on the TPR repository tables and dynamic views)
 - Optional DB parameters:
   - `ACTIVE_SESSION_HISTORY=Y` is required for `*_with_ash.ini` to populate ASH rows
   - `TPR_SEGMENT_STATISTICS=Y` is required for `Full_*` segment statistics sheets (`seg_*`) to populate

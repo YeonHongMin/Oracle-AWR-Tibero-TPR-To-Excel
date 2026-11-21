@@ -23,6 +23,8 @@ INI ──TprONE_ini_to_sql.py──▶ .sql ──tbsql(spool HTML)──▶ .h
 python TprONE_ini_to_sql.py -i Simple_TprOne_2node.ini -o out.sql
 ```
 
+- 리포트 종류(`NODE` vs `TAC`)는 INI 파일명(`*Single*` → `NODE`, 그 외 `TAC`)과 본문 바인드 변수로 자동 판별하며, `-k {NODE,TAC}` 옵션으로 직접 지정할 수도 있습니다.
+
 ### 2. 수집 시간대 지정 (필수)
 
 생성된 `out.sql` 상단의 두 줄을 원하는 구간으로 바꿉니다:
@@ -35,11 +37,13 @@ exec :snapdate_to:=202611172359
 - 형식: `YYYYMMDDHH24MI` (년월일시분, DB 서버 로컬 시각).
 - 기본값(`202601010000`~`202601150000`)은 자리 표시자이므로 반드시 원하는 구간
   (예: 장애 시간대, 최근 하루)으로 바꿔서 실행하세요.
-- 구간 안의 스냅샷을 수집합니다. `SYS._TPR_*` 테이블은 이미 구간 증분(delta)을
-  저장하므로 첫 스냅샷부터 그대로 포함되며(Oracle처럼 `snap_id - 1` 차감 불필요),
-  구간 내 스냅샷이 없으면 `ERROR-20001: No TPR ... snapshots found ...` 오류로 멈춥니다.
+- 시작/종료 시각이 지정 구간 안에 포함되는 스냅샷(`begin_interval_time >= :snapdate_from`
+  및 `end_interval_time <= :snapdate_to`)을 수집합니다.
+- `SYS._TPR_*` 테이블은 이미 구간 증분(delta)을 저장하므로 첫 스냅샷부터 그대로
+  포함되며(Oracle처럼 `snap_id - 1` 차감 불필요), 구간 내 스냅샷이 없으면
+  `ERROR-20001: No TPR ... snapshots found ...` 오류로 멈춥니다.
 - `:inst_no`, `:dbid`는 접속 정보에서 자동으로 얻으므로 날짜 두 줄만 바꾸면 됩니다.
-  Tibero의 `THREAD#` / `INSTANCE_NUMBER`는 **0-based**(`0..N-1`)이므로 TAC ini는
+- Tibero의 `THREAD#` / `INSTANCE_NUMBER`는 **0-based**(`0..N-1`)이므로 TAC ini는
   `:inst_no1:=0` … `:inst_no8:=7`로 미리 설정돼 있습니다. 인스턴스 번호가 다르면
   이 값들을 수정하면 됩니다.
 
@@ -49,18 +53,18 @@ exec :snapdate_to:=202611172359
 디렉터리는 없으며, 결과 HTML은 현재 디렉터리에 생깁니다.
 
 - Single 계열 ini: 각 인스턴스에 접속해 **노드별로 1회씩** 실행.
-- TAC 계열 ini: 아무 인스턴스에나 **1회** 실행 — 쿼리가 글로벌 스냅샷 ID(`snap_gid`)
+- TAC(Tibero Active Cluster) 계열 ini: 아무 인스턴스에나 **1회** 실행 — 쿼리가 글로벌 스냅샷 ID(`snap_gid`)
   기준으로 클러스터 전체를 커버합니다.
   (2노드 클러스터에서 `4node`나 `8node` ini를 써도 동작하며, 없는 노드는 `inst#<N>`으로
   표시되고 0으로 채워집니다.)
 
 ```bash
 # Single 계열 — 노드별 1회
-tbsql -s sys/<비밀번호>@<노드1-접속별칭> @out.sql
-tbsql -s sys/<비밀번호>@<노드2-접속별칭> @out.sql
+tbsql sys/<비밀번호>@<노드1-접속별칭> @out.sql
+tbsql sys/<비밀번호>@<노드2-접속별칭> @out.sql
 
 # TAC 계열 — 아무 노드에 1회
-tbsql -s sys/<비밀번호>@<아무노드-접속별칭> @out.sql
+tbsql sys/<비밀번호>@<아무노드-접속별칭> @out.sql
 ```
 
 ### 4. Excel로 변환
@@ -69,22 +73,24 @@ tbsql -s sys/<비밀번호>@<아무노드-접속별칭> @out.sql
 python TprONE_html_to_excel.py -i TPR_TAC_Simple_2node_tac1_prod1_20261117_201453.html
 ```
 
-변환기는 HTML 안에 기록된 ini 이름을 읽어, 리포트 디렉터리 → 현재 디렉터리 →
-스크립트 디렉터리 순으로 해당 ini를 찾습니다. `-n <ini>`로 직접 지정할 수도 있습니다.
-차트가 포함된 `.xlsx`는 HTML 옆에 생깁니다. `*_with_ash.ini`로 수집했다면 추가로 생긴
-`..._ASH.html`도 같은 방법으로 변환하면 됩니다.
+변환기는 HTML 안에 기록된 ini 이름을 자동으로 찾아 차트가 포함된 `.xlsx`를 생성합니다.
+
+- 탐색 순서: 리포트 디렉터리 → 현재 디렉터리 → 스크립트 디렉터리 (`-n <ini>`로 직접 지정 가능).
+- 출력 경로: 기본값은 입력 HTML과 같은 위치의 `.xlsx` (`-o <out.xlsx>`로 변경 가능).
+- 차트 X축 옵션: `--x-rotation DEG`(`-90..90`, 기본 `-90`), `--x-format FMT`(기본 `'mm-dd hh:mm'`, 빈 문자열 `""` 전달 시 INI 설정 유지).
+- ASH 변환: `*_with_ash.ini`로 수집했다면 추가로 생긴 `..._ASH.html`도 같은 방법으로 변환합니다.
 
 ## 출력 예시
 
-| `load` — 노드별 DBTime(s) | `rac_load` — Global Cache blocks received |
+| `load` — 노드별 DBTime(s) | `tac_load` — Global Cache blocks received |
 |---|---|
-| ![load 차트](docs/images/load_1.png) | ![rac_load 차트](docs/images/rac_load_1.png) |
+| ![load 차트](docs/images/load_1.png) | ![tac_load 차트](docs/images/tac_load_1.png) |
 
 ## 요구 사항
 
 - Python 3.x 표준 라이브러리 + `xlsxwriter`
 - Tibero **7 이상**; `tbsql` 클라이언트
-- `SYS._TPR_*`, `SYS._VT_*`, `DBA_HIST_*` 읽기 권한 (`SYS` 또는 해당 테이블 SELECT 권한이 있는 계정)
+- `SYS._TPR_*`, `SYS._VT_*`, `V$*`, `GV$*` 읽기 권한 (`SYS` 또는 해당 TPR 테이블·동적 뷰 SELECT 권한이 있는 계정)
 - 선택적 DB 파라미터:
   - `ACTIVE_SESSION_HISTORY=Y`: `*_with_ash.ini`에서 ASH 데이터가 쌓이려면 활성화 필요
   - `TPR_SEGMENT_STATISTICS=Y`: `Full_*`의 세그먼트 통계 시트(`seg_*`)가 수집되려면 활성화 필요
