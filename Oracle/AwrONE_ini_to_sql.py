@@ -54,7 +54,7 @@ def write_sql_header(outfile, ini_file):
     - Declares bind variables, date range defaults, snapshot ID resolution, and HTML spool settings.
     """
     
-    # Distinguish Single-instance INIs ('NODE') from RAC INIs ('RAC': 2node/3node/4node),
+    # Distinguish Single-instance INIs ('NODE') from RAC INIs ('RAC': 2node..8node),
     # and embed a tag derived from the INI filename (without 'AwrOne_') to identify the source INI.
     # To keep spool filenames concise, strip '_Single' for NODE INIs (redundant with 'NODE')
     # and compress '_with_ash' to '_ash'.
@@ -89,6 +89,8 @@ var inst_no3 number
 var inst_no4 number
 var inst_no5 number
 var inst_no6 number
+var inst_no7 number
+var inst_no8 number
 var dbid number
 
 exec select instance_number into :inst_no from v$instance;
@@ -122,6 +124,8 @@ exec :inst_no3:=3
 exec :inst_no4:=4
 exec :inst_no5:=5
 exec :inst_no6:=6
+exec :inst_no7:=7
+exec :inst_no8:=8
 
 print :snap_fr
 print :snap_to

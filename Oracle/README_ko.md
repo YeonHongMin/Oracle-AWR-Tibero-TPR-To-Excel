@@ -7,7 +7,7 @@ SQL*Plus HTML 스풀로 DB에서 수집한 뒤 지표별 라인 차트가 들어
 `.xlsx`로 변환합니다.
 
 > English version: [README.md](README.md)
-> (Tibero TPR 형제 도구 **TprOne**은 개발 중입니다 — 리포지터리 루트 참조.)
+> (Tibero TPR용 형제 도구 **TprOne**은 [`../Tibero/`](../Tibero/)를 참조하세요.)
 
 ## 파이프라인
 
@@ -89,8 +89,8 @@ python AwrONE_html_to_excel.py -i AWR_RAC_Simple_2node_rac1_PROD1_20261110_19213
 | `Simple_AwrOne_Single_with_ash.ini` | 위 + ASH (별도 `_ASH.html`) | 〃 |
 | `Full_AwrOne_Single.ini` | 단일 인스턴스 전체 (Top SQL, Segment 등) | 〃 |
 | `Full_AwrOne_Single_with_ash.ini` | 위 + ASH | 〃 |
-| `Simple_AwrOne_{2,3,4}node.ini` | RAC 노드 비교 핵심 지표 | 1회 (클러스터 단위) |
-| `Full_AwrOne_{2,3,4}node.ini` | RAC 노드 비교 전체 | 〃 |
+| `Simple_AwrOne_{2,3,4,7,8}node.ini` | RAC 노드 비교 핵심 지표 | 1회 (클러스터 단위) |
+| `Full_AwrOne_{2,3,4,7,8}node.ini` | RAC 노드 비교 전체 | 〃 |
 
 ## 출력 파일명 규칙
 
@@ -98,7 +98,7 @@ python AwrONE_html_to_excel.py -i AWR_RAC_Simple_2node_rac1_PROD1_20261110_19213
 AWR_<NODE|RAC>_<ini태그>_<host>_<inst>_<yyyymmdd_hhmiss>.html
 ```
 
-- `NODE` = Single 계열 ini, `RAC` = 2/3/4node 계열 ini
+- `NODE` = Single 계열 ini, `RAC` = 2/3/4/7/8node 계열 ini
 - `<ini태그>` = ini 파일명에서 `AwrOne_`를 뺀 것. 길이를 줄이기 위해 NODE 계열의 `_Single`은
   생략하고 `_with_ash`는 `_ash`로 압축한다
   (예: `Simple_AwrOne_Single.ini` → `Simple`, `Full_AwrOne_Single_with_ash.ini` → `Full_ash`,
@@ -120,7 +120,7 @@ ini의 CHART 제목에 `@@hostname@@`, `@@instance@@`를 쓰면 변환 시 입�
   ② 쿼리 블록(select로 시작). 쿼리 블록만 SQL 출력에 들어가고 앞에 `rem [section]`
   마커가 붙는다.
 - 바인드 변수: `:snapdate_from` / `:snapdate_to`(요청 구간), `:snap_fr` / `:snap_to`
-  (확정된 스냅샷 id), `:inst_no`, `:inst_no1..6`, `:dbid`.
+  (확정된 스냅샷 id), `:inst_no`, `:inst_no1..8`, `:dbid`.
 - 차트 앵커 규칙: CHART의 열(COL) 필드 = 해당 시트 데이터 끝 열 + 2.
   컬럼을 추가/삭제할 때는 CHART/FORMAT 열 참조도 함께 밀어줘야 한다.
 

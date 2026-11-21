@@ -987,8 +987,7 @@ Examples:
         try:
             self.current_worksheet = self.workbook.add_worksheet(self.current_sheet_name)
         except Exception as e:
-            if self.debug:
-                print(f"Warning: Failed to create worksheet '{self.current_sheet_name}': {e}")
+            print(f"Warning: Failed to create worksheet '{self.current_sheet_name}': {e} (section skipped)")
             return
         
         # Ensure xlsxwriter Format objects exist for this sheet's INI FORMAT rules
